@@ -51,11 +51,6 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
       - name: Install build dependencies
         shell: bash
         run: |
@@ -67,7 +62,7 @@ jobs:
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
 
           python -m pip install --upgrade pip
-          python -m pip install capstone fonttools lz4 backports.zstd
+          python -m pip install capstone fonttools lz4 zstandard
 
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
 
@@ -97,19 +92,27 @@ jobs:
           test -f nxnative/scripts/build_ipa_from_nsp.py
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
-      - name: Verify bundled shader translator
+      - name: Rebuild shader translator
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
 
-          TRANSLATOR="dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
+          case "$(uname -m)" in
+            arm64|aarch64) RID=osx-arm64 ;;
+            x86_64) RID=osx-x64 ;;
+            *) echo "::error::Unsupported runner architecture"; exit 1 ;;
+          esac
 
-          if [[ ! -f "$TRANSLATOR" ]]; then
-            echo "::error::The pinned nxnative source is missing its bundled shader translator."
-            exit 1
-          fi
+          dotnet publish dm/gfx/tools/dmsh_xlate \
+            -c Release -r "$RID" \
+            --self-contained true \
+            -p:UseAppHost=true \
+            -o dm/gfx/tools/dmsh_xlate_bin
 
+          TRANSLATOR=dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
+
+          test -f "$TRANSLATOR"
           chmod +x "$TRANSLATOR"
           "$TRANSLATOR" --source-sha
 
@@ -239,6 +242,22 @@ jobs:
 
           echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
           echo "Detected title ID: $DM_GAME"
+
+      - name: Repair shader-chain lock and header
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          export DM_GAME
+
+          echo "Updating shader toolchain lock to match this runner..."
+
+          dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
+          python3 dm/gfx/tools/dmsh_chain.py --update-lock
+          python3 dm/gfx/tools/dmsh_chain.py --header
+
+          echo "Shader-chain lock and header updated."
 
       - name: Patch AAC movie decoder for Mario vs Donkey Kong only
         shell: bash
