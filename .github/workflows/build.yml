@@ -1,4 +1,6 @@
+
 name: Build unsigned nxnative IPA
+
 on:
   workflow_dispatch:
     inputs:
@@ -13,16 +15,20 @@ on:
         description: "Optional base-game title ID override, e.g. 0100B99019412000"
         required: false
         type: string
+
 permissions:
   contents: read
+
 concurrency:
   group: nxnative-ipa-${{ github.run_id }}
   cancel-in-progress: false
+
 jobs:
   build:
     name: Build unsigned iOS IPA
     runs-on: macos-latest
     timeout-minutes: 360
+
     env:
       GAME_URL: ${{ secrets.Game_URL }}
       UPDATE_URL: ${{ secrets.Update_URL }}
@@ -31,6 +37,7 @@ jobs:
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
+
     steps:
       - name: Check required secrets
         shell: bash
@@ -38,81 +45,110 @@ jobs:
           set -euo pipefail
           [[ -n "$GAME_URL" ]] || { echo "::error::Missing Game_URL"; exit 1; }
           [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL"; exit 1; }
+
       - name: Install .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
       - name: Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
           brew update
           brew install gdown lz4 zstd spirv-cross xcodegen unar p7zip
+
           python3 -m venv "$RUNNER_TEMP/nxnative-venv"
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
+
           python -m pip install --upgrade pip
           python -m pip install capstone fonttools lz4 zstandard
+
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
+
           dotnet --info
           python --version
+
       - name: Download nxnative source
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ "$DEVICE_TARGET" == "iPhone 15 or older (BC fallback)" ]]; then
             curl --fail --location --retry 3 \
               "https://codeload.github.com/mianmuhammadse/nxnative/tar.gz/d158df611bf2f3fa315c4f16585575cdfdb2a1d3" \
               -o "$RUNNER_TEMP/nxnative.tar.gz"
+
             mkdir -p nxnative
+
             tar -xzf "$RUNNER_TEMP/nxnative.tar.gz" \
               --strip-components=1 -C nxnative
+
             echo "NXNATIVE_MODE=bc-fallback" >> "$GITHUB_ENV"
           else
             git clone https://github.com/seedds/nxnative.git nxnative
             echo "NXNATIVE_MODE=standard" >> "$GITHUB_ENV"
           fi
+
           test -f nxnative/scripts/build_ipa_from_nsp.py
+
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
+
       - name: Rebuild shader translator
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
+
           case "$(uname -m)" in
             arm64|aarch64) RID=osx-arm64 ;;
             x86_64) RID=osx-x64 ;;
             *) echo "::error::Unsupported runner architecture"; exit 1 ;;
           esac
+
           dotnet publish dm/gfx/tools/dmsh_xlate \
             -c Release -r "$RID" \
             --self-contained true \
             -p:UseAppHost=true \
             -o dm/gfx/tools/dmsh_xlate_bin
+
           TRANSLATOR=dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
+
           test -f "$TRANSLATOR"
           chmod +x "$TRANSLATOR"
+
           "$TRANSLATOR" --source-sha
+
       - name: Download game, optional update/DLC, and keys
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
+
           download_drive_file() {
             local url="$1"
             local destination="$2"
             local label="$3"
+
             [[ -n "$url" ]] || {
               echo "Skipping optional $label."
               return 0
             }
+
             echo "Downloading $label..."
+
             gdown "$url" -O "$destination"
+
             test -s "$destination"
+
             if [[ "$destination" == "$GAME_DIR/keys/prod.keys" ]]; then
               return 0
             fi
+
             local file_type
             file_type="$(file -b "$destination")"
+
             case "$file_type" in
               *"Zip archive"*) mv "$destination" "${destination}.zip" ;;
               *"RAR archive"*) mv "$destination" "${destination}.rar" ;;
@@ -121,22 +157,29 @@ jobs:
               *) mv "$destination" "${destination}.nsp" ;;
             esac
           }
+
           download_drive_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
           download_drive_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
           download_drive_file "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
           download_drive_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
+
           test -s "$GAME_DIR/keys/prod.keys" || {
             echo "::error::prod.keys download failed"
             exit 1
           }
+
       - name: Extract archives and collect NSP files
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
+
           shopt -s nullglob
+
           for file in "$GAME_DIR"/downloads/*; do
             [[ -f "$file" ]] || continue
+
             case "$file" in
               *.zip|*.ZIP)
                 ditto -x -k "$file" "$GAME_DIR/extracted" ;;
@@ -150,23 +193,29 @@ jobs:
                 cp -f "$file" "$GAME_DIR/extracted/$(basename "$file")" ;;
             esac
           done
+
           find "$GAME_DIR/extracted" -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
+
           find "$GAME_DIR/downloads" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
+
           if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found"
             exit 1
           fi
+
           echo "Packages found:"
           find "$GAME_DIR/nsp" -maxdepth 1 -type f -print
+
       - name: Identify base game title ID
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ -n "$PROFILE_OVERRIDE" ]]; then
             DM_GAME="${PROFILE_OVERRIDE^^}"
             DM_GAME="${DM_GAME#0X}"
@@ -175,70 +224,91 @@ jobs:
               find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
               grep -Ei '\[v0\]' | head -n 1 || true
             )"
+
             if [[ -z "$BASE_FILE" ]]; then
               BASE_FILE="$(
                 find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
                 grep -Eiv '\[v[1-9][0-9]*\]' | head -n 1 || true
               )"
             fi
+
             if [[ -z "$BASE_FILE" ]]; then
               BASE_FILE="$(find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' | head -n 1 || true)"
             fi
+
             DM_GAME="$(
               basename "$BASE_FILE" |
               grep -Eio '\[([0-9a-f]{16})\]' | head -n 1 |
               tr -d '[]' | tr '[:lower:]' '[:upper:]' || true
             )"
           fi
+
           [[ "$DM_GAME" =~ ^[0-9A-F]{16}$ ]] || {
             echo "::error::Could not identify title ID. Set profile_id in workflow inputs."
             exit 1
           }
+
           echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
           echo "Detected title ID: $DM_GAME"
+
       - name: Repair shader-chain lock and header
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
+
           # The shader-chain maintenance commands require an existing profile.
           # Use Super Mario Odyssey temporarily for global toolchain maintenance.
           # This does not change the actual game title ID used by the build.
+
           export DM_GAME=0100000000010000
+
           echo "Updating shader toolchain lock to match this runner..."
+
           dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
           python3 dm/gfx/tools/dmsh_chain.py --update-lock
           python3 dm/gfx/tools/dmsh_chain.py --header
+
           echo "Shader-chain lock and header updated."
+
       - name: Patch AAC movie decoder for Mario vs Donkey Kong only
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
+
           if [[ "$DM_GAME" != "0100B99019412000" ]]; then
             echo "Not Mario vs Donkey Kong. Skipping AAC patch."
             exit 0
           fi
+
           FILE="dm/host/hle_movie.c"
+
           test -f "$FILE" || {
             echo "::error::Movie decoder source not found: $FILE"
             exit 1
           }
+
           python3 - "$FILE" <<'PY'
           import pathlib
           import re
           import sys
+
           path = pathlib.Path(sys.argv[1])
           text = path.read_text()
+
           text, count = re.subn(
               r'(#\s*define\s+MD_NOUT\s+)64\b',
               r'\g<1>32',
               text,
               count=1
           )
+
           if count != 1:
               raise SystemExit("Could not safely find '#define MD_NOUT 64'.")
+
           pattern = r'\*size\s*=\s*MD_PCM_CAP\s*;\s*\*mode\s*=\s*d->mode\s*;'
+
           replacement = (
               'int sbr = d->vhdr_n[0] > 0 && '
               '((d->vhdr[0][0] >> 3) == 5 || '
@@ -247,36 +317,139 @@ jobs:
               '? 1024 * (sbr ? 2 : 1) * d->ch * 2 : MD_PCM_CAP; '
               '*mode = d->mode;'
           )
+
           text, size_count = re.subn(pattern, replacement, text, count=1)
+
           if size_count != 1:
               raise SystemExit("Could not safely find the expected buffer-size assignment.")
+
           path.write_text(text)
+
           print("Applied Mario AAC output-slot and buffer-size fix.")
           PY
+
       - name: Prepare game directory
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$GAME_DIR/GameFiles"
+
           find "$GAME_DIR/nsp" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/GameFiles/" \;
+
           echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
+
       - name: Build IPA using automatic profile generation
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
-          echo "Building title: $DM_GAME"
-          echo "Target mode: $NXNATIVE_MODE"
-          python3 scripts/build_ipa_from_nsp.py \
-            "$BUILD_GAME_DIR" \
-            -k "$GAME_DIR/keys/prod.keys" \
-            -o "$GAME_DIR/${DM_GAME}.ipa"
-          test -s "$GAME_DIR/${DM_GAME}.ipa"
-          echo "IPA successfully created:"
-          ls -lh "$GAME_DIR/${DM_GAME}.ipa"
-      - name: Upload IPA only
+
+          {
+            echo "========================================"
+            echo "nxnative build diagnostics"
+            echo "========================================"
+            echo "Build date: $(date -u)"
+            echo "Game title ID: $DM_GAME"
+            echo "Target mode: $NXNATIVE_MODE"
+            echo "Runner: $(uname -a)"
+            echo "Architecture: $(uname -m)"
+            echo "Python: $(python3 --version)"
+            echo "========================================"
+
+            echo "Starting IPA build..."
+
+            python3 scripts/build_ipa_from_nsp.py \
+              "$BUILD_GAME_DIR" \
+              -k "$GAME_DIR/keys/prod.keys" \
+              -o "$GAME_DIR/${DM_GAME}.ipa"
+
+            test -s "$GAME_DIR/${DM_GAME}.ipa"
+
+            echo "IPA successfully created:"
+            ls -lh "$GAME_DIR/${DM_GAME}.ipa"
+
+          } 2>&1 | tee "$GAME_DIR/build-diagnostics.log"
+
+      - name: Collect provisional profile and build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          DIAG_DIR="$GAME_DIR/diagnostics"
+
+          mkdir -p "$DIAG_DIR"
+
+          {
+            echo "nxnative build diagnostic summary"
+            echo "=================================="
+            echo "Date: $(date -u)"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow run: $GITHUB_RUN_ID"
+            echo "Run attempt: $GITHUB_RUN_ATTEMPT"
+            echo "Device target: $DEVICE_TARGET"
+            echo "Detected game title ID: ${DM_GAME:-not detected}"
+            echo "Build mode: ${NXNATIVE_MODE:-not detected}"
+            echo ""
+            echo "Expected provisional profile:"
+            echo "GameFiles/GameFiles/${DM_GAME:-UNKNOWN}_build/profile/${DM_GAME:-UNKNOWN}/game.tsv"
+            echo ""
+          } > "$DIAG_DIR/metadata.txt"
+
+          if [[ -f "$GAME_DIR/build-diagnostics.log" ]]; then
+            cp "$GAME_DIR/build-diagnostics.log" "$DIAG_DIR/"
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            PROFILE_DIR="$GAME_DIR/GameFiles/${DM_GAME}_build/profile/${DM_GAME}"
+
+            if [[ -d "$PROFILE_DIR" ]]; then
+              echo "Found provisional profile at: $PROFILE_DIR" \
+                >> "$DIAG_DIR/metadata.txt"
+
+              cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+            else
+              echo "Expected profile directory not found." \
+                >> "$DIAG_DIR/metadata.txt"
+
+              MATCH="$(
+                find "$GAME_DIR/GameFiles" -type f \
+                  -path "*/profile/${DM_GAME}/game.tsv" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$MATCH" ]]; then
+                PROFILE_DIR="${MATCH%/game.tsv}"
+
+                echo "Found profile at alternate location: $PROFILE_DIR" \
+                  >> "$DIAG_DIR/metadata.txt"
+
+                cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+              fi
+            fi
+          fi
+
+          {
+            echo ""
+            echo "Diagnostic artifact contents:"
+            find "$DIAG_DIR" -maxdepth 4 -type f -print
+          } >> "$DIAG_DIR/metadata.txt"
+
+          echo "Diagnostic collection complete."
+
+      - name: Upload build diagnostics and provisional profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-${{ env.DM_GAME }}-diagnostics
+          path: ${{ github.workspace }}/GameFiles/diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
