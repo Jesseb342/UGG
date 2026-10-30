@@ -201,9 +201,10 @@ jobs:
         working-directory: nxnative
         run: |
           set -euo pipefail
-          # Prevent the translator from looking for a permanent game profile.
-          # Untitled Goose Game uses a provisional profile generated during the build.
-          unset DM_GAME GAME
+          # The shader-chain maintenance commands require an existing profile.
+          # Use Super Mario Odyssey temporarily for global toolchain maintenance.
+          # This does not change the actual game title ID used by the build.
+          export DM_GAME=0100000000010000
           echo "Updating shader toolchain lock to match this runner..."
           dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
           python3 dm/gfx/tools/dmsh_chain.py --update-lock
