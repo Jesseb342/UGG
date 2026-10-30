@@ -1,3 +1,4 @@
+
 name: Build unsigned nxnative IPA
 
 on:
@@ -256,10 +257,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The shader-chain maintenance commands require an existing profile.
-          # Use Super Mario Odyssey temporarily for global toolchain maintenance.
-          # This does not change the actual game title ID used by the build.
-
           export DM_GAME=0100000000010000
 
           echo "Updating shader toolchain lock to match this runner..."
@@ -326,6 +323,36 @@ jobs:
 
           print("Applied Mario AAC output-slot and buffer-size fix.")
           PY
+
+      - name: Add Goose SDK Break register diagnostics
+        if: env.DM_GAME == '010082400BCC6000'
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dm/host/hle_svc.c")
+          source = path.read_text()
+
+          old = 'LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);'
+          new = """LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);
+                  module_t *ret_mm = module_of((void *)regs[30]);
+                  LOG("[Break registers] x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx x7=%#llx x8=%#llx",
+                      regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6], regs[7], regs[8]);
+                  LOG("[Break registers] x19=%#llx x20=%#llx x21=%#llx x22=%#llx x23=%#llx x24=%#llx x25=%#llx x26=%#llx x27=%#llx x28=%#llx fp=%#llx lr=%#llx",
+                      regs[19], regs[20], regs[21], regs[22], regs[23], regs[24], regs[25], regs[26], regs[27], regs[28], regs[29], regs[30]);
+                  LOG("[Break return] %s+%#llx", ret_mm ? ret_mm->name : "?", ret_mm ? (unsigned long long)((uintptr_t)regs[30] - (uintptr_t)ret_mm->base) : 0ull);"""
+
+          if source.count(old) != 1:
+              raise SystemExit("Expected Break log line was not found exactly once; refusing to patch.")
+          path.write_text(source.replace(old, new, 1))
+          print("Installed Goose-only Break register and return-address diagnostics.")
+          PY
+
+          grep -n -A8 'Break registers' dm/host/hle_svc.c
 
       - name: Prepare game directory
         shell: bash
@@ -423,15 +450,13 @@ jobs:
               if [[ -n "$MATCH" ]]; then
                 PROFILE_DIR="${MATCH%/game.tsv}"
 
-                echo "Found profile at alternate location: $PROFILE_DIR" \
+                echo "Found provisional profile at alternate location: $PROFILE_DIR" \
                   >> "$DIAG_DIR/metadata.txt"
 
                 cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
               fi
             fi
 
-            # Collect the survey report. Search the whole workspace because
-            # nxnative's survey directory is beside the NSP folder.
             SURVEY="$GAME_DIR/GameFiles/${DM_GAME}_survey/survey.md"
 
             if [[ -f "$SURVEY" ]]; then
@@ -455,7 +480,6 @@ jobs:
               fi
             fi
 
-            # Collect the detailed Mac-side heap-check log.
             HEAP_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/heap_check.log"
 
             if [[ -f "$HEAP_LOG" ]]; then
