@@ -430,6 +430,55 @@ jobs:
                 cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
               fi
             fi
+
+            # Collect the survey report. Search the whole workspace because
+            # nxnative's survey directory is beside the NSP folder.
+            SURVEY="$GAME_DIR/GameFiles/${DM_GAME}_survey/survey.md"
+
+            if [[ -f "$SURVEY" ]]; then
+              cp "$SURVEY" "$DIAG_DIR/survey.md"
+              echo "Collected survey.md from: $SURVEY" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              SURVEY_MATCH="$(
+                find "$GAME_DIR" -type f -name survey.md \
+                  -path "*/${DM_GAME}_survey/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$SURVEY_MATCH" ]]; then
+                cp "$SURVEY_MATCH" "$DIAG_DIR/survey.md"
+                echo "Collected survey.md from alternate location: $SURVEY_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: survey.md not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
+
+            # Collect the detailed Mac-side heap-check log.
+            HEAP_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/heap_check.log"
+
+            if [[ -f "$HEAP_LOG" ]]; then
+              cp "$HEAP_LOG" "$DIAG_DIR/heap_check.log"
+              echo "Collected heap_check.log from: $HEAP_LOG" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              HEAP_MATCH="$(
+                find "$GAME_DIR" -type f -name heap_check.log \
+                  -path "*/${DM_GAME}_build/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$HEAP_MATCH" ]]; then
+                cp "$HEAP_MATCH" "$DIAG_DIR/heap_check.log"
+                echo "Collected heap_check.log from alternate location: $HEAP_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: heap_check.log not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
           fi
 
           {
