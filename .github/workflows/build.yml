@@ -139,7 +139,7 @@ jobs:
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
 
           python3 - "$GAME_URL" "$UPDATE_URL" "$DLC_URL" "$KEYS_URL" "$REAL_DEBRID_TOKEN" "$GAME_DIR/downloads" "$GAME_DIR/keys" <<'PY'
-          import json, re, sys, urllib.parse, urllib.request
+          import json, re, sys, urllib.error, urllib.parse, urllib.request
           from pathlib import Path
 
           game_raw, update_raw, dlc_raw, keys_url, token, downloads_dir, keys_dir = sys.argv[1:]
@@ -154,23 +154,59 @@ jobs:
               name = re.sub(r"[^A-Za-z0-9._() -]", "_", name).strip(" .")
               return name or fallback
 
-          def unrestrict_and_download(url, fallback):
-              data = urllib.parse.urlencode({"link": url}).encode()
+          def api_error_details(exc):
+              body = ""
+              if isinstance(exc, urllib.error.HTTPError):
+                  try:
+                      body = exc.read().decode("utf-8", errors="replace")
+                  except Exception:
+                      pass
+                  try:
+                      payload = json.loads(body)
+                      message = payload.get("error", "No API error message returned")
+                      code = payload.get("error_code")
+                      return f"HTTP {exc.code}; error={message}; error_code={code}"
+                  except Exception:
+                      return f"HTTP {exc.code}; response={body[:500] or 'empty'}"
+              return f"{type(exc).__name__}: {exc}"
+
+          def rd_request(endpoint, data=None, authenticated=True):
+              headers = {"User-Agent": "nxnative-GitHub-Actions/1.0"}
+              if authenticated:
+                  headers["Authorization"] = "Bearer " + token
+              if data is not None:
+                  headers["Content-Type"] = "application/x-www-form-urlencoded"
               req = urllib.request.Request(
-                  "https://api.real-debrid.com/rest/1.0/unrestrict/link",
+                  "https://api.real-debrid.com/rest/1.0/" + endpoint,
                   data=data,
-                  headers={
-                      "Authorization": "Bearer " + token,
-                      "Content-Type": "application/x-www-form-urlencoded",
-                      "User-Agent": "nxnative-GitHub-Actions/1.0",
-                  },
-                  method="POST",
+                  headers=headers,
+                  method="POST" if data is not None else "GET",
               )
               try:
                   with urllib.request.urlopen(req, timeout=60) as response:
-                      result = json.loads(response.read().decode("utf-8"))
+                      raw = response.read().decode("utf-8")
+                      return json.loads(raw) if raw else {}
               except Exception as exc:
-                  raise RuntimeError(f"Real-Debrid could not resolve a hoster link ({type(exc).__name__}: {exc}). Check link validity and current hoster support.") from exc
+                  raise RuntimeError(f"Real-Debrid API {endpoint} failed: {api_error_details(exc)}") from exc
+
+          print("Checking Real-Debrid account/token...", flush=True)
+          account = rd_request("user")
+          print(
+              "Real-Debrid account check passed"
+              + (f" (type: {account.get('type')})" if account.get("type") else "")
+              + ".",
+              flush=True,
+          )
+
+          def unrestrict_and_download(url, fallback):
+              data = urllib.parse.urlencode({"link": url}).encode()
+              try:
+                  result = rd_request("unrestrict/link", data=data)
+              except Exception as exc:
+                  raise RuntimeError(
+                      f"Could not unrestrict base/update/DLC link through Real-Debrid. "
+                      f"{exc}. The workflow does not log the private source URL."
+                  ) from exc
               direct = result.get("download")
               if not direct:
                   raise RuntimeError("Real-Debrid response did not contain a download URL: " + json.dumps(result)[:1000])
