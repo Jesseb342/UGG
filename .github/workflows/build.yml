@@ -166,10 +166,7 @@ jobs:
           grep -Eqi '<[^>]*:response|<response' "$RUNNER_TEMP/pocketserver-list.xml" || { echo "::error::PocketServer WebDAV listing unavailable. Check that the server is running."; exit 1; }
           brew install rclone
           rclone config create pocketserver webdav url "$POCKETSERVER_URL" vendor other
-          echo "PocketServer file summary:"
-          rclone size pocketserver:/ --json
-          echo "Top-level PocketServer entries:"
-          rclone lsf pocketserver:/
+          echo "Starting PocketServer download; periodic rclone progress will follow."
           rclone copy pocketserver:/ "$GAME_DIR/downloads" --progress --stats 5s --stats-one-line --stats-log-level NOTICE --transfers 6 --checkers 4 --retries 3
           find "$GAME_DIR/downloads" -type f -print -quit | grep -q . || { echo "::error::No files found in the PocketServer shared folder."; exit 1; }
           find "$GAME_DIR/downloads" -maxdepth 4 -type f -print
