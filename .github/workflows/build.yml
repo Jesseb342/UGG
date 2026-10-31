@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           brew update
-          brew install gdown lz4 zstd spirv-cross xcodegen unar p7zip
+          brew install gdown lz4 zstd spirv-cross glslang xcodegen unar p7zip
 
           python3 -m venv "$RUNNER_TEMP/nxnative-venv"
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
