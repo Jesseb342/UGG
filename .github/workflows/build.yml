@@ -28,7 +28,7 @@ on:
         required: true
         type: choice
         options:
-          - "RAYMLEGDE-NSwTcH-%5BBASE%5D-NSP-Ziperto.rar"
+          - "RAYMLEGDE-NSwTcH-[BASE]-NSP-Ziperto.rar"
           - "UGG-(RF)-NSwTcH-NSP-Ziperto.rar"
       update_filename:
         description: "Choose an update, or None"
