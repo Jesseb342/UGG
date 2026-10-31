@@ -75,10 +75,10 @@ jobs:
               sys.exit("ERROR: No key=value entries were found. Expected plain-text prod.keys lines such as header_key = ...")
 
           header = entries.get("header_key", "")
-          is_hex = bool(re.fullmatch(r"[0-9a-fA-F]{32}", header))
+          is_hex = bool(re.fullmatch(r"[0-9a-fA-F]{64}", header))
           print(f"header_key found: {'yes' if 'header_key' in entries else 'no'}")
           print(f"header_key character count: {len(header)}")
-          print(f"header_key is 32 hexadecimal characters: {'yes' if is_hex else 'no'}")
+          print(f"header_key is 64 hexadecimal characters: {'yes' if is_hex else 'no'}")
 
           if not is_hex:
               sys.exit("ERROR: The file was decoded, but header_key is missing or malformed. No key values were printed.")
