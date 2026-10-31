@@ -188,7 +188,7 @@ jobs:
           # *.part1.rar, extract only part1; unar reads the remaining volumes.
           for file in "$GAME_DIR"/downloads/*; do
             [[ -f "$file" ]] || continue
-            lower="${file,,}"
+            lower="$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
             case "$lower" in
               *.zip) ditto -x -k "$file" "$GAME_DIR/extracted" ;;
               *.rar)
