@@ -1,0 +1,72 @@
+name: Check prod.keys
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-keys:
+    name: Decode and validate prod.keys
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Keys_URL secret
+        env:
+          KEYS_BASE64: ${{ secrets.Keys_URL }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import os
+          import re
+          import sys
+
+          encoded = os.environ.get("KEYS_BASE64", "").strip()
+          if not encoded:
+              sys.exit("ERROR: The Keys_URL secret is empty.")
+
+          compact = re.sub(r"\\s+", "", encoded)
+          try:
+              raw = base64.b64decode(compact, validate=True)
+          except Exception as exc:
+              sys.exit(f"ERROR: Keys_URL is not valid Base64 ({type(exc).__name__}).")
+
+          print(f"Decoded byte count: {len(raw)}")
+          if not raw:
+              sys.exit("ERROR: Base64 decoded successfully, but the file is empty.")
+
+          try:
+              text = raw.decode("utf-8-sig")
+          except UnicodeDecodeError:
+              sys.exit("ERROR: Decoded data is not UTF-8 text. Check that you Base64-encoded the plain-text prod.keys file.")
+
+          entries = {}
+          for line in text.splitlines():
+              line = line.split("#", 1)[0].strip()
+              if not line or "=" not in line:
+                  continue
+              name, value = line.split("=", 1)
+              name = name.strip().lower()
+              value = value.strip()
+              if name:
+                  entries[name] = value
+
+          names = sorted(entries)
+          print(f"Parsed key names ({len(names)}): " + (", ".join(names) if names else "(none)"))
+
+          if not names:
+              if re.fullmatch(r"[A-Za-z0-9+/=\\s]+", text):
+                  sys.exit("ERROR: Decoded content looks like Base64 text rather than a prod.keys file. It may have been Base64-encoded twice.")
+              sys.exit("ERROR: No key=value entries were found. Expected plain-text prod.keys lines such as header_key = ...")
+
+          header = entries.get("header_key", "")
+          is_hex = bool(re.fullmatch(r"[0-9a-fA-F]{32}", header))
+          print(f"header_key found: {'yes' if 'header_key' in entries else 'no'}")
+          print(f"header_key character count: {len(header)}")
+          print(f"header_key is 32 hexadecimal characters: {'yes' if is_hex else 'no'}")
+
+          if not is_hex:
+              sys.exit("ERROR: The file was decoded, but header_key is missing or malformed. No key values were printed.")
+
+          print("SUCCESS: Keys_URL contains a readable prod.keys file with a valid header_key.")
+          PY
