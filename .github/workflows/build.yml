@@ -71,8 +71,8 @@ jobs:
                   name, value = line.split("=", 1)
                   entries[name.strip()] = value.strip()
           header = entries.get("header_key", "")
-          if len(header) != 32 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
-              raise SystemExit("Decoded prod.keys is missing a valid 32-hex-character header_key")
+          if len(header) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
+              raise SystemExit("Decoded prod.keys is missing a valid 64-hex-character header_key")
           with open(path, "wb") as f:
               f.write(raw)
           print(f"prod.keys decoded and validated ({len(raw):,} bytes); header_key is present.")
