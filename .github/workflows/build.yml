@@ -147,8 +147,7 @@ jobs:
           keys = Path(keys_dir)
 
           def urls_from_secret(value):
-              text = (value or "").replace("\\r", "\\n")
-              found = re.findall(r"https?://[^\\s]+", text)
+              found = re.findall(r"https?://[^\s]+", value or "")
               return [u.strip().rstrip(";,") for u in found if u.strip().rstrip(";,")]
 
           def safe_name(name, fallback):
