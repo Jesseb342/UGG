@@ -108,16 +108,6 @@ jobs:
           echo "DOTNET_ROOT=$RUNNER_TEMP/dotnet" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/dotnet/dotnet" --info
 
-      - name: Connect runner to iPhone over Tailscale
-        if: inputs.transfer_source == 'iPhone WebDAV'
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          ping: 100.124.74.102
-          args: --accept-dns=false
-
       - name: Install build dependencies
         shell: bash
         run: |
@@ -161,6 +151,16 @@ jobs:
 
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
+
+      - name: Connect runner to iPhone over Tailscale
+        if: inputs.transfer_source == 'iPhone WebDAV'
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: 100.124.74.102
+          args: --accept-dns=false
       - name: Rebuild shader translator
         shell: bash
         working-directory: nxnative
