@@ -107,7 +107,15 @@ jobs:
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
 
+      - name: Cache shader translator
+        id: shader-cache
+        uses: actions/cache@v4
+        with:
+          path: nxnative/dm/gfx/tools/dmsh_xlate_bin
+          key: nxnative-shader-translator-${{ runner.os }}-${{ runner.arch }}-dotnet10-${{ hashFiles('nxnative/dm/gfx/tools/dmsh_xlate/**/*') }}
+
       - name: Rebuild shader translator
+        if: steps.shader-cache.outputs.cache-hit != 'true'
         shell: bash
         working-directory: nxnative
         run: |
@@ -130,6 +138,16 @@ jobs:
           test -f "$TRANSLATOR"
           chmod +x "$TRANSLATOR"
 
+          "$TRANSLATOR" --source-sha
+
+      - name: Verify cached or rebuilt shader translator
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+          TRANSLATOR=dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
+          test -f "$TRANSLATOR"
+          chmod +x "$TRANSLATOR"
           "$TRANSLATOR" --source-sha
 
       - name: Download files from direct links
