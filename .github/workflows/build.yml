@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 360
 
     env:
-      KEYS_URL: ${{ secrets.Keys_URL }}
+      PROD_KEYS_BASE64: ${{ secrets.PROD_KEYS_BASE64 }}
       SENDCM_URL: ${{ secrets.SENDCM_URL }}
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
@@ -41,8 +41,41 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$SENDCM_URL" ]] || { echo "::error::Missing SENDCM_URL secret."; exit 1; }
-          [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL secret."; exit 1; }
+          [[ -n "$PROD_KEYS_BASE64" ]] || { echo "::error::Missing PROD_KEYS_BASE64 secret."; exit 1; }
 
+
+      - name: Decode and validate prod.keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GAME_DIR/keys"
+          python3 - "$GAME_DIR/keys/prod.keys" <<'PY'
+          import base64, os, sys
+          path = sys.argv[1]
+          encoded = os.environ.get("PROD_KEYS_BASE64", "").strip()
+          if not encoded:
+              raise SystemExit("PROD_KEYS_BASE64 secret is empty")
+          try:
+              raw = base64.b64decode("".join(encoded.split()), validate=True)
+          except Exception as e:
+              raise SystemExit(f"PROD_KEYS_BASE64 is not valid Base64: {e}")
+          try:
+              text = raw.decode("utf-8")
+          except UnicodeDecodeError:
+              raise SystemExit("Decoded prod.keys is not a readable UTF-8 text file")
+          entries = {}
+          for line in text.splitlines():
+              line = line.split("#", 1)[0].strip()
+              if "=" in line:
+                  name, value = line.split("=", 1)
+                  entries[name.strip()] = value.strip()
+          header = entries.get("header_key", "")
+          if len(header) != 32 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
+              raise SystemExit("Decoded prod.keys is missing a valid 32-hex-character header_key")
+          with open(path, "wb") as f:
+              f.write(raw)
+          print(f"prod.keys decoded and validated ({len(raw):,} bytes); header_key is present.")
+          PY
       - name: Install .NET 10 SDK
         shell: bash
         run: |
@@ -164,35 +197,7 @@ jobs:
           echo "Archive downloaded:"
           ls -lh "$GAME_DIR/downloads/game-archive.rar"
 
-          python3 - "$KEYS_URL" "$GAME_DIR/keys/prod.keys" <<'PY'
-          import os, sys, urllib.request
-          url, path = sys.argv[1:]
-          req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 nxnative-GitHub-Actions/1.0"})
-          with urllib.request.urlopen(req, timeout=120) as src, open(path,"wb") as dst:
-              while True:
-                  data = src.read(1024*1024)
-                  if not data: break
-                  dst.write(data)
-          if not os.path.isfile(path) or os.path.getsize(path) == 0: raise SystemExit("prod.keys download failed")
-          with open(path, "rb") as f:
-              raw = f.read()
-          if raw.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-              raise SystemExit("Keys_URL returned an HTML page, not a prod.keys file")
-          try:
-              text = raw.decode("utf-8")
-          except UnicodeDecodeError:
-              raise SystemExit("Keys_URL did not return a readable prod.keys text file")
-          entries = {}
-          for line in text.splitlines():
-              line = line.split("#", 1)[0].strip()
-              if "=" in line:
-                  name, value = line.split("=", 1)
-                  entries[name.strip()] = value.strip()
-          header = entries.get("header_key", "")
-          if len(header) != 32 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
-              raise SystemExit("prod.keys is missing a valid 32-hex-character header_key. Replace Keys_URL with a current, complete prod.keys file.")
-          print(f"prod.keys downloaded and validated ({len(raw):,} bytes); header_key is present.")
-          PY
+ PY
 
       - name: Extract archives and collect NSP files
         shell: bash
