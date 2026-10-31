@@ -137,6 +137,26 @@ jobs:
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
 
+      - name: Patch OpenGL ES shader version for SPIR-V
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dm/gfx/tools/gl_shaders.py")
+          source = path.read_text()
+          old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n"
+          new = old + "    # Vulkan SPIR-V requires GLSL ES 3.10; promote ES 3.00 after preprocessing.\n" + "    pre, changed = re.subn(r'(?m)^(#version\\s+)300(\\s+es\\b)', r'\\\\g<1>310\\\\2', pre, count=1)\n" + "    if changed:\n" + "        print(f'Promoted GLSL ES 3.00 to 3.10 for SPIR-V: {key}')\n"
+          if "Promoted GLSL ES 3.00 to 3.10 for SPIR-V" in source:
+              raise SystemExit("Shader version compatibility patch already present")
+          if old not in source:
+              raise SystemExit("Could not find expected gl_shaders.py preprocessing line; refusing an unsafe patch")
+          path.write_text(source.replace(old, new, 1))
+          print("Patched gl_shaders.py to promote GLSL ES 3.00 to 3.10 for SPIR-V compilation.")
+          PY
+
       - name: Cache shader translator
         id: shader-cache
         uses: actions/cache@v4
