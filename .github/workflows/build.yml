@@ -24,17 +24,28 @@ on:
           - "iPhone WebDAV"
           - "Existing URL secrets"
       game_filename:
-        description: "Exact base-game filename in PocketServer (iPhone WebDAV mode)"
-        required: false
-        type: string
+        description: "Choose the base game from the iPhone WebDAV folder"
+        required: true
+        type: choice
+        options:
+          - "RAYMLEGDE-NSwTcH-%5BBASE%5D-NSP-Ziperto.rar"
+          - "UGG-(RF)-NSwTcH-NSP-Ziperto.rar"
       update_filename:
-        description: "Optional exact update filename in PocketServer"
-        required: false
-        type: string
+        description: "Choose an update, or None"
+        required: true
+        default: "None"
+        type: choice
+        options:
+          - "None"
+          - "RAYMLEGDE-NSwTcH-NSP-Update12-Ziperto.rar"
+          - "UGG-NSwTcH-NSP-Update112-Ziperto.rar"
       dlc_filename:
-        description: "Optional exact DLC filename in PocketServer"
-        required: false
-        type: string
+        description: "Choose DLC, or None (no DLC package is currently listed)"
+        required: true
+        default: "None"
+        type: choice
+        options:
+          - "None"
       keys_filename:
         description: "Exact prod.keys filename in PocketServer (iPhone WebDAV mode)"
         required: false
@@ -64,8 +75,8 @@ jobs:
       GAME_DIR: ${{ github.workspace }}/GameFiles
       TRANSFER_SOURCE: ${{ inputs.transfer_source }}
       GAME_FILENAME: ${{ inputs.game_filename }}
-      UPDATE_FILENAME: ${{ inputs.update_filename }}
-      DLC_FILENAME: ${{ inputs.dlc_filename }}
+      UPDATE_FILENAME: ${{ inputs.update_filename == 'None' && '' || inputs.update_filename }}
+      DLC_FILENAME: ${{ inputs.dlc_filename == 'None' && '' || inputs.dlc_filename }}
       KEYS_FILENAME: ${{ inputs.keys_filename }}
 
     steps:
