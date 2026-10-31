@@ -187,6 +187,36 @@ jobs:
           ping: 100.124.74.102
           args: --accept-dns=false
 
+      - name: Diagnose iPhone WebDAV connectivity
+        if: inputs.transfer_source == 'iPhone WebDAV'
+        shell: bash
+        run: |
+          set +e
+          echo "=== Tailscale status ==="
+          tailscale status
+          echo ""
+          echo "=== Tailscale network check ==="
+          tailscale netcheck
+          echo ""
+          echo "=== TCP port 49215 test ==="
+          nc -vz -G 8 100.124.74.102 49215
+          TCP_RESULT=$?
+          echo "TCP test exit code: $TCP_RESULT"
+          echo ""
+          echo "=== WebDAV PROPFIND test ==="
+          curl --verbose --max-time 20 -X PROPFIND \
+            -H "Depth: 1" \
+            "http://100.124.74.102:49215/" \
+            -o "$RUNNER_TEMP/webdav-propfind.xml"
+          HTTP_RESULT=$?
+          echo "PROPFIND curl exit code: $HTTP_RESULT"
+          if [[ -f "$RUNNER_TEMP/webdav-propfind.xml" ]]; then
+            head -c 2000 "$RUNNER_TEMP/webdav-propfind.xml"
+            echo
+          fi
+          echo ""
+          echo "Diagnostics complete; the download step will now run."
+
       - name: Download game, optional update/DLC, and keys
         shell: bash
         run: |
