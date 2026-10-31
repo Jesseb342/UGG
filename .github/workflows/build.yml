@@ -167,7 +167,7 @@ jobs:
           brew install rclone
           rclone config create pocketserver webdav url "$POCKETSERVER_URL" vendor other
           echo "Starting PocketServer download; periodic rclone progress will follow."
-          rclone copy pocketserver:/ "$GAME_DIR/downloads" --progress --stats 5s --stats-one-line --stats-log-level NOTICE --transfers 6 --checkers 4 --retries 3
+          rclone copy pocketserver:/ "$GAME_DIR/downloads" --max-depth 1 --stats 10s --stats-log-level NOTICE --log-level INFO --transfers 6 --checkers 4 --retries 3
           find "$GAME_DIR/downloads" -type f -print -quit | grep -q . || { echo "::error::No files found in the PocketServer shared folder."; exit 1; }
           find "$GAME_DIR/downloads" -maxdepth 4 -type f -print
           python3 - "$KEYS_URL" "$GAME_DIR/keys/prod.keys" <<'PY'
