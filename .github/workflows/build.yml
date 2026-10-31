@@ -30,20 +30,17 @@ jobs:
 
     env:
       KEYS_URL: ${{ secrets.Keys_URL }}
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
-      POCKETSERVER_URL: http://100.124.74.102:49215
+      SENDCM_URL: ${{ secrets.SENDCM_URL }}
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
 
     steps:
-      - name: Validate PocketServer and key inputs
+      - name: Validate direct download and key inputs
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$TS_OAUTH_CLIENT_ID" ]] || { echo "::error::Missing TS_OAUTH_CLIENT_ID secret."; exit 1; }
-          [[ -n "$TS_OAUTH_SECRET" ]] || { echo "::error::Missing TS_OAUTH_SECRET secret."; exit 1; }
+          [[ -n "$SENDCM_URL" ]] || { echo "::error::Missing SENDCM_URL secret."; exit 1; }
           [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL secret."; exit 1; }
 
       - name: Install .NET 10 SDK
@@ -149,27 +146,24 @@ jobs:
           chmod +x "$TRANSLATOR"
           "$TRANSLATOR" --source-sha
 
-      - name: Connect runner to Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
-      - name: Pull Rayman files from iPhone PocketServer
+      - name: Download game archive from direct link
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
-          echo "Checking PocketServer over Tailscale..."
-          curl --fail --silent --show-error --max-time 30 -X PROPFIND -H "Depth: 1" -H "Content-Length: 0" "$POCKETSERVER_URL/" -o "$RUNNER_TEMP/pocketserver-list.xml" -w "HTTP %{http_code}\\n"
-          grep -Eqi '<[^>]*:response|<response' "$RUNNER_TEMP/pocketserver-list.xml" || { echo "::error::PocketServer WebDAV listing unavailable. Check that the server is running."; exit 1; }
-          brew install rclone
-          rclone config create pocketserver webdav url "$POCKETSERVER_URL" vendor other
-          echo "Starting PocketServer download; periodic rclone progress will follow."
-          rclone copy pocketserver:/ "$GAME_DIR/downloads" --max-depth 1 --stats 10s --stats-log-level NOTICE --log-level INFO --transfers 6 --checkers 4 --retries 3
-          find "$GAME_DIR/downloads" -type f -print -quit | grep -q . || { echo "::error::No files found in the PocketServer shared folder."; exit 1; }
-          find "$GAME_DIR/downloads" -maxdepth 4 -type f -print
+          echo "Downloading game archive from SENDCM_URL..."
+          curl --fail --show-error --location \
+            --connect-timeout 30 --max-time 7200 \
+            --retry 3 --retry-delay 5 \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" \
+            --output "$GAME_DIR/downloads/game-archive.rar" \
+            --write-out $'HTTP status: %{http_code}\nDownloaded: %{size_download} bytes\nAverage speed: %{speed_download} bytes/sec\nElapsed: %{time_total}s\n' \
+            "$SENDCM_URL"
+          test -s "$GAME_DIR/downloads/game-archive.rar" || { echo "::error::Direct archive download returned an empty file."; exit 1; }
+          file "$GAME_DIR/downloads/game-archive.rar"
+          echo "Archive downloaded:"
+          ls -lh "$GAME_DIR/downloads/game-archive.rar"
+
           python3 - "$KEYS_URL" "$GAME_DIR/keys/prod.keys" <<'PY'
           import os, sys, urllib.request
           url, path = sys.argv[1:]
