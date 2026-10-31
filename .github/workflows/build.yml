@@ -207,9 +207,9 @@ jobs:
               --output "$GAME_DIR/downloads/bugsnax-update.rar" \
               --write-out $'Update HTTP status: %{http_code}\nDownloaded: %{size_download} bytes\n' \
               "$UPDATE_URL"
-            test -s "$GAME_DIR/downloads/bugsnax-update.nsp" || { echo "::error::UPDATE_URL returned an empty update file."; exit 1; }
-            file "$GAME_DIR/downloads/bugsnax-update.nsp"
-            ls -lh "$GAME_DIR/downloads/bugsnax-update.nsp"
+            test -s "$GAME_DIR/downloads/bugsnax-update.rar" || { echo "::error::UPDATE_URL returned an empty update file."; exit 1; }
+            file "$GAME_DIR/downloads/bugsnax-update.rar"
+            ls -lh "$GAME_DIR/downloads/bugsnax-update.rar"
           else
             echo "UPDATE_URL is empty; continuing without a separate update package."
           fi
