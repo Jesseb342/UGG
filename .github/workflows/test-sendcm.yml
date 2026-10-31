@@ -17,49 +17,36 @@ jobs:
             echo "::error::Add SENDCM_URL as a repository Actions secret before running this test."
             exit 1
           fi
-          python3 - <<'PY'
-          import os, sys, time, urllib.request, urllib.error
+          echo "Testing SendCM with curl, following redirects and requesting the first 1 MiB..."
+          set +e
+          curl --silent --show-error --location \
+            --connect-timeout 20 --max-time 90 --retry 1 --retry-delay 2 \
+            --range 0-1048575 \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" \
+            --output "$RUNNER_TEMP/sendcm-test.bin" \
+            --write-out $'HTTP status: %{http_code}\nContent type: %{content_type}\nBytes received: %{size_download}\nElapsed: %{time_total}s\nAverage speed: %{speed_download} bytes/sec\n' \
+            "$SENDCM_URL"
+          curl_rc=$?
+          set -e
 
-          url = os.environ["SENDCM_URL"]
-          req = urllib.request.Request(
-              url,
-              headers={
-                  "User-Agent": "Mozilla/5.0 (compatible; GitHubActions SendCM connectivity test)",
-                  "Range": "bytes=0-1048575",
-              },
-          )
-          started = time.monotonic()
-          try:
-              response = urllib.request.urlopen(req, timeout=45)
-          except Exception as exc:
-              print(f"REQUEST FAILED: {type(exc).__name__}: {exc}")
-              sys.exit(1)
+          echo "curl exit code: $curl_rc"
+          if [ -f "$RUNNER_TEMP/sendcm-test.bin" ]; then
+            file_size=$(wc -c < "$RUNNER_TEMP/sendcm-test.bin" | tr -d ' ')
+            echo "Saved test bytes: $file_size"
+            if head -c 512 "$RUNNER_TEMP/sendcm-test.bin" | grep -Eiq '<!doctype html|<html'; then
+              echo "RESULT: Received HTML rather than the archive; likely a landing page, challenge, or session requirement."
+              exit 1
+            fi
+          else
+            echo "No response body was saved."
+          fi
 
-          status = response.status
-          headers = response.headers
-          content_type = headers.get("Content-Type", "unknown")
-          content_range = headers.get("Content-Range", "not supplied")
-          disposition = headers.get("Content-Disposition", "not supplied")
-          data = response.read(1024 * 1024)
-          elapsed = max(time.monotonic() - started, 0.001)
-
-          print(f"HTTP status: {status}")
-          print(f"Content-Type: {content_type}")
-          print(f"Content-Range: {content_range}")
-          print(f"Content-Disposition: {disposition}")
-          print(f"Bytes received for test: {len(data):,}")
-          print(f"Elapsed: {elapsed:.2f} seconds")
-          print(f"Test throughput: {len(data) / elapsed / 1024:.1f} KiB/s")
-
-          if status not in (200, 206):
-              print("RESULT: Host returned an unexpected HTTP status.")
-              sys.exit(1)
-          if "text/html" in content_type.lower() or data.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-              print("RESULT: The URL returned an HTML page, not the archive. It may require a session, CAPTCHA, or another redirect.")
-              sys.exit(1)
-          if len(data) == 0:
-              print("RESULT: No file data received.")
-              sys.exit(1)
-          print("RESULT: GitHub runner received file data. This confirms access, but does not yet prove a complete large-file download.")
-          response.close()
-          PY
+          if [ "$curl_rc" -ne 0 ]; then
+            echo "RESULT: curl could not complete the request from the GitHub runner."
+            exit 1
+          fi
+          if [ "${file_size:-0}" -eq 0 ]; then
+            echo "RESULT: No file data received."
+            exit 1
+          fi
+          echo "RESULT: GitHub runner received file data. This confirms access to a response, not a complete archive download."
