@@ -139,7 +139,7 @@ jobs:
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
 
           python3 - "$DIRECT_GAME_URL" "$DIRECT_UPDATE_URL" "$DIRECT_DLC_URL" "$KEYS_URL" "$GAME_DIR/downloads" "$GAME_DIR/keys" <<'PY'
-          import re, sys, urllib.error, urllib.parse, urllib.request
+          import email.message, re, sys, urllib.error, urllib.parse, urllib.request
           from pathlib import Path
 
           game_raw, update_raw, dlc_raw, keys_url, downloads_dir, keys_dir = sys.argv[1:]
@@ -159,9 +159,11 @@ jobs:
               try:
                   with urllib.request.urlopen(request, timeout=180) as response:
                       disposition = response.headers.get("Content-Disposition", "")
-                      match = re.search(r'filename\\*?=(?:UTF-8\\'\\')?["\\']?([^"\\';]+)', disposition, re.I)
+                      disposition_header = email.message.Message()
+                      disposition_header["content-disposition"] = disposition
+                      header_filename = disposition_header.get_filename()
                       url_name = urllib.parse.unquote(urllib.parse.urlsplit(response.geturl()).path.rsplit("/", 1)[-1])
-                      filename = safe_name(match.group(1) if match else url_name, fallback)
+                      filename = safe_name(header_filename or url_name, fallback)
                       target = downloads / filename
                       if target.exists():
                           stem, suffix = target.stem, target.suffix
