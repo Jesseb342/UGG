@@ -15,6 +15,31 @@ on:
         description: "Optional base-game title ID override, e.g. 0100B99019412000"
         required: false
         type: string
+      transfer_source:
+        description: "Where to retrieve game files"
+        required: true
+        type: choice
+        default: "iPhone WebDAV"
+        options:
+          - "iPhone WebDAV"
+          - "Existing URL secrets"
+      game_filename:
+        description: "Exact base-game filename in PocketServer (iPhone WebDAV mode)"
+        required: false
+        type: string
+      update_filename:
+        description: "Optional exact update filename in PocketServer"
+        required: false
+        type: string
+      dlc_filename:
+        description: "Optional exact DLC filename in PocketServer"
+        required: false
+        type: string
+      keys_filename:
+        description: "Exact prod.keys filename in PocketServer (iPhone WebDAV mode)"
+        required: false
+        default: "prod.keys"
+        type: string
 
 permissions:
   contents: read
@@ -37,14 +62,33 @@ jobs:
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
+      TRANSFER_SOURCE: ${{ inputs.transfer_source }}
+      GAME_FILENAME: ${{ inputs.game_filename }}
+      UPDATE_FILENAME: ${{ inputs.update_filename }}
+      DLC_FILENAME: ${{ inputs.dlc_filename }}
+      KEYS_FILENAME: ${{ inputs.keys_filename }}
 
     steps:
-      - name: Check required secrets
+      - name: Check selected file source
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$GAME_URL" ]] || { echo "::error::Missing Game_URL"; exit 1; }
-          [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL"; exit 1; }
+          if [[ "$TRANSFER_SOURCE" == "iPhone WebDAV" ]]; then
+            [[ -n "$GAME_FILENAME" ]] || { echo "::error::Enter game_filename"; exit 1; }
+            [[ -n "$KEYS_FILENAME" ]] || { echo "::error::Enter keys_filename"; exit 1; }
+          else
+            [[ -n "$GAME_URL" ]] || { echo "::error::Missing Game_URL"; exit 1; }
+            [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL"; exit 1; }
+          fi
+
+      - name: Connect runner to iPhone over Tailscale
+        if: inputs.transfer_source == 'iPhone WebDAV'
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: 100.124.74.102
 
       - name: Install .NET 10 SDK
         uses: actions/setup-dotnet@v4
@@ -126,29 +170,10 @@ jobs:
 
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
 
-          download_drive_file() {
-            local url="$1"
-            local destination="$2"
-            local label="$3"
-
-            [[ -n "$url" ]] || {
-              echo "Skipping optional $label."
-              return 0
-            }
-
-            echo "Downloading $label..."
-
-            gdown "$url" -O "$destination"
-
-            test -s "$destination"
-
-            if [[ "$destination" == "$GAME_DIR/keys/prod.keys" ]]; then
-              return 0
-            fi
-
+          classify_archive() {
+            local destination="$1"
             local file_type
             file_type="$(file -b "$destination")"
-
             case "$file_type" in
               *"Zip archive"*) mv "$destination" "${destination}.zip" ;;
               *"RAR archive"*) mv "$destination" "${destination}.rar" ;;
@@ -158,10 +183,45 @@ jobs:
             esac
           }
 
-          download_drive_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
-          download_drive_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
-          download_drive_file "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
-          download_drive_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
+          download_webdav_file() {
+            local filename="$1"
+            local destination="$2"
+            local label="$3"
+            [[ -n "$filename" ]] || { echo "Skipping optional $label."; return 0; }
+
+            local encoded
+            encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$filename")"
+            echo "Downloading $label directly from iPhone: $filename"
+            curl --fail --show-error --location --retry 3 --retry-delay 2 \
+              --connect-timeout 20 --output "$destination" \
+              "http://100.124.74.102:49215/$encoded"
+            test -s "$destination"
+            if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
+          }
+
+          download_url_file() {
+            local url="$1"
+            local destination="$2"
+            local label="$3"
+            [[ -n "$url" ]] || { echo "Skipping optional $label."; return 0; }
+            echo "Downloading $label from configured URL..."
+            curl --fail --show-error --location --retry 3 --retry-delay 2 \
+              --output "$destination" "$url"
+            test -s "$destination"
+            if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
+          }
+
+          if [[ "$TRANSFER_SOURCE" == "iPhone WebDAV" ]]; then
+            download_webdav_file "$GAME_FILENAME" "$GAME_DIR/downloads/game" "base game"
+            download_webdav_file "$UPDATE_FILENAME" "$GAME_DIR/downloads/update" "update"
+            download_webdav_file "$DLC_FILENAME" "$GAME_DIR/downloads/dlc" "DLC"
+            download_webdav_file "$KEYS_FILENAME" "$GAME_DIR/keys/prod.keys" "prod.keys"
+          else
+            download_url_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
+            download_url_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
+            download_url_file "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
+            download_url_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
+          fi
 
           test -s "$GAME_DIR/keys/prod.keys" || {
             echo "::error::prod.keys download failed"
