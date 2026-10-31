@@ -29,23 +29,22 @@ jobs:
     timeout-minutes: 360
 
     env:
-      DIRECT_GAME_URL: ${{ secrets.DIRECT_GAME_URL }}
-      DIRECT_UPDATE_URL: ${{ secrets.DIRECT_UPDATE_URL }}
-      DIRECT_DLC_URL: ${{ secrets.DIRECT_DLC_URL }}
-      UPDATE_URL: ${{ secrets.Update_URL }}
-      DLC_URL: ${{ secrets.DLC_URL }}
       KEYS_URL: ${{ secrets.Keys_URL }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      POCKETSERVER_URL: http://100.124.74.102:49215
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
 
     steps:
-      - name: Validate direct download inputs
+      - name: Validate PocketServer and key inputs
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$DIRECT_GAME_URL" ]] || { echo "::error::Missing DIRECT_GAME_URL (put both Real-Debrid-generated direct links here, one per line)."; exit 1; }
-          [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL (prod.keys direct download URL)."; exit 1; }
+          [[ -n "$TS_OAUTH_CLIENT_ID" ]] || { echo "::error::Missing TS_OAUTH_CLIENT_ID secret."; exit 1; }
+          [[ -n "$TS_OAUTH_SECRET" ]] || { echo "::error::Missing TS_OAUTH_SECRET secret."; exit 1; }
+          [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL secret."; exit 1; }
 
       - name: Install .NET 10 SDK
         shell: bash
@@ -150,142 +149,40 @@ jobs:
           chmod +x "$TRANSLATOR"
           "$TRANSLATOR" --source-sha
 
-      - name: Download files from direct links
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Pull Rayman files from iPhone PocketServer
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
-
-          python3 - "$DIRECT_GAME_URL" "$DIRECT_UPDATE_URL" "$DIRECT_DLC_URL" "$KEYS_URL" "$GAME_DIR/downloads" "$GAME_DIR/keys" <<'PY'
-          import email.message, re, sys, urllib.error, urllib.parse, urllib.request
-          from pathlib import Path
-
-          game_raw, update_raw, dlc_raw, keys_url, downloads_dir, keys_dir = sys.argv[1:]
-          downloads = Path(downloads_dir)
-          keys = Path(keys_dir)
-
-          class TracingRedirectHandler(urllib.request.HTTPRedirectHandler):
-              def __init__(self):
-                  super().__init__()
-                  self.chain = []
-
-              def redirect_request(self, req, fp, code, msg, headers, newurl):
-                  old = urllib.parse.urlsplit(req.full_url)
-                  new = urllib.parse.urlsplit(newurl)
-                  old_keys = sorted({key for key, _ in urllib.parse.parse_qsl(old.query, keep_blank_values=True)})
-                  new_keys = sorted({key for key, _ in urllib.parse.parse_qsl(new.query, keep_blank_values=True)})
-                  same_url = urllib.parse.urlunsplit(old) == urllib.parse.urlunsplit(new)
-                  self.chain.append(
-                      f"HTTP {code}: {old.hostname}{old.path[:100]} "
-                      f"(query keys: {old_keys}) -> {new.hostname}{new.path[:100]} "
-                      f"(query keys: {new_keys}; exact URL unchanged: {same_url})"
-                  )
-                  return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-          redirect_trace = TracingRedirectHandler()
-          downloader = urllib.request.build_opener(redirect_trace)
-
-          def urls_from_secret(value):
-              found = re.findall(r"https?://[^\s]+", value or "")
-              return [u.strip().rstrip(";,") for u in found if u.strip().rstrip(";,")]
-
-          def safe_name(name, fallback):
-              name = Path(str(name or "")).name
-              name = re.sub(r"[^A-Za-z0-9._() -]", "_", name).strip(" .")
-              return name or fallback
-
-          def download_direct(url, fallback):
-              redirect_trace.chain.clear()
-              request = urllib.request.Request(url, headers={
-                  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                  "Accept-Language": "en-US,en;q=0.9",
-                  "Sec-Fetch-Dest": "document",
-                  "Sec-Fetch-Mode": "navigate",
-                  "Sec-Fetch-Site": "none",
-                  "Upgrade-Insecure-Requests": "1",
-              })
-              try:
-                  with downloader.open(request, timeout=180) as response:
-                      disposition = response.headers.get("Content-Disposition", "")
-                      disposition_header = email.message.Message()
-                      disposition_header["content-disposition"] = disposition
-                      header_filename = disposition_header.get_filename()
-                      url_name = urllib.parse.unquote(urllib.parse.urlsplit(response.geturl()).path.rsplit("/", 1)[-1])
-                      filename = safe_name(header_filename or url_name, fallback)
-                      target = downloads / filename
-                      if target.exists():
-                          stem, suffix = target.stem, target.suffix
-                          n = 2
-                          while target.exists():
-                              target = downloads / f"{stem}_{n}{suffix}"
-                              n += 1
-                      total = int(response.headers.get("Content-Length", "0") or 0)
-                      content_type = response.headers.get("Content-Type", "")
-                      first = response.read(4096)
-                      if not first:
-                          raise RuntimeError(f"Direct link returned an empty response ({target.name}).")
-                      if "text/html" in content_type.lower() or first.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-                          raise RuntimeError(f"Direct link returned an HTML page instead of a file ({target.name}); the link may have expired or require a browser session.")
-                      print(f"Downloading {target.name}...", flush=True)
-                      received = len(first)
-                      with target.open("wb") as output:
-                          output.write(first)
-                          while True:
-                              block = response.read(4 * 1024 * 1024)
-                              if not block:
-                                  break
-                              output.write(block)
-                              received += len(block)
-                              if total:
-                                  print(f"  {target.name}: {received/1024**2:,.0f}/{total/1024**2:,.0f} MiB ({100*received/total:.1f}%)", flush=True)
-                  if target.stat().st_size == 0:
-                      raise RuntimeError(f"Downloaded file is empty: {target.name}")
-                  print(f"Downloaded {target.name}: {target.stat().st_size:,} bytes", flush=True)
-              except urllib.error.HTTPError as exc:
-                  trace = "\\n  ".join(redirect_trace.chain[-15:]) or "(no redirect recorded)"
-                  raise RuntimeError(
-                      f"Direct download failed with HTTP {exc.code} ({exc.reason}).\\n"
-                      f"Redirect chain (host/path only; query strings hidden):\\n  {trace}\\n"
-                      "This will show whether the generated link is looping between gateways or returning to the same URL."
-                  ) from exc
-              except urllib.error.URLError as exc:
-                  trace = "\\n  ".join(redirect_trace.chain[-15:]) or "(no redirect recorded)"
-                  raise RuntimeError(
-                      f"Direct download URL error: {exc.reason}.\\n"
-                      f"Redirect chain (host/path only; query strings hidden):\\n  {trace}"
-                  ) from exc
-
-          def download_group(raw, label, required=False):
-              links = urls_from_secret(raw)
-              if not links:
-                  if required:
-                      raise RuntimeError(f"No direct URLs found in {label}.")
-                  print(f"No direct {label} configured; skipping.", flush=True)
-                  return
-              print(f"{label}: downloading {len(links)} direct link(s).", flush=True)
-              for index, link in enumerate(links, 1):
-                  print(f"{label}: starting link {index}/{len(links)}", flush=True)
-                  download_direct(link, f"{label.replace(' ', '_')}_{index}.rar")
-
-          download_group(game_raw, "base game", required=True)
-          download_group(update_raw, "update")
-          download_group(dlc_raw, "DLC")
-
-          print("Downloading prod.keys...", flush=True)
-          key_req = urllib.request.Request(keys_url, headers={"User-Agent": "Mozilla/5.0 nxnative-GitHub-Actions/1.0"})
-          with urllib.request.urlopen(key_req, timeout=120) as response, (keys / "prod.keys").open("wb") as output:
+          echo "Checking PocketServer over Tailscale..."
+          curl --fail --silent --show-error --max-time 30 -X PROPFIND -H "Depth: 1" -H "Content-Length: 0" "$POCKETSERVER_URL/" -o "$RUNNER_TEMP/pocketserver-list.xml" -w "HTTP %{http_code}\\n"
+          grep -Eqi '<[^>]*:response|<response' "$RUNNER_TEMP/pocketserver-list.xml" || { echo "::error::PocketServer WebDAV listing unavailable. Check that the server is running."; exit 1; }
+          brew install rclone
+          rclone config create pocketserver webdav url "$POCKETSERVER_URL" vendor other
+          echo "PocketServer contents:"
+          rclone lsf pocketserver:/ --recursive
+          rclone copy pocketserver:/ "$GAME_DIR/downloads" --progress --transfers 3 --checkers 4 --retries 3
+          find "$GAME_DIR/downloads" -type f -print -quit | grep -q . || { echo "::error::No files found in the PocketServer shared folder."; exit 1; }
+          find "$GAME_DIR/downloads" -maxdepth 4 -type f -print
+          python3 - "$KEYS_URL" "$GAME_DIR/keys/prod.keys" <<'PY'
+          import os, sys, urllib.request
+          url, path = sys.argv[1:]
+          req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 nxnative-GitHub-Actions/1.0"})
+          with urllib.request.urlopen(req, timeout=120) as src, open(path,"wb") as dst:
               while True:
-                  block = response.read(1024 * 1024)
-                  if not block:
-                      break
-                  output.write(block)
-          if not (keys / "prod.keys").is_file() or (keys / "prod.keys").stat().st_size == 0:
-              raise RuntimeError("prod.keys download failed or returned an empty file.")
-          print(f"prod.keys downloaded: {(keys / 'prod.keys').stat().st_size:,} bytes", flush=True)
+                  data = src.read(1024*1024)
+                  if not data: break
+                  dst.write(data)
+          if not os.path.isfile(path) or os.path.getsize(path) == 0: raise SystemExit("prod.keys download failed")
+          print("prod.keys downloaded successfully")
           PY
-
-          find "$GAME_DIR/downloads" -maxdepth 1 -type f -print
 
       - name: Extract archives and collect NSP files
         shell: bash
