@@ -29,8 +29,9 @@ jobs:
     timeout-minutes: 360
 
     env:
-      PROD_KEYS_BASE64: ${{ secrets.PROD_KEYS_BASE64 }}
+      PROD_KEYS_BASE64: ${{ secrets.Keys_URL }}
       SENDCM_URL: ${{ secrets.SENDCM_URL }}
+      UPDATE_URL: ${{ secrets.update_URL }}
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
@@ -197,7 +198,345 @@ jobs:
           echo "Archive downloaded:"
           ls -lh "$GAME_DIR/downloads/game-archive.rar"
 
- PY
+          if [[ -n "$UPDATE_URL" ]]; then
+            echo "Downloading optional game update from UPDATE_URL..."
+            curl --fail --show-error --location \\
+              --connect-timeout 30 --max-time 7200 \\
+              --retry 3 --retry-delay 5 \\
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" \\
+              --output "$GAME_DIR/downloads/bugsnax-update.nsp" \\
+              --write-out 
+
+      - name: Extract archives and collect NSP files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
+          shopt -s nullglob
+
+          # Extract each independent archive. For multipart RAR sets named
+          # *.part1.rar, extract only part1; unar reads the remaining volumes.
+          for file in "$GAME_DIR"/downloads/*; do
+            [[ -f "$file" ]] || continue
+            lower="$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
+            case "$lower" in
+              *.zip) ditto -x -k "$file" "$GAME_DIR/extracted" ;;
+              *.rar)
+                if [[ "$lower" =~ \.part([2-9][0-9]*)\.rar$ ]]; then
+                  echo "Skipping later RAR volume (handled by part1): $(basename "$file")"
+                  continue
+                fi
+                unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file"
+                ;;
+              *.7z) 7z x -y "-o$GAME_DIR/extracted" "$file" ;;
+              *.tar.gz|*.tgz) tar -xzf "$file" -C "$GAME_DIR/extracted" ;;
+              *.nsp|*.nsz) cp -f "$file" "$GAME_DIR/extracted/" ;;
+              *) echo "Unrecognized archive extension, attempting unar: $(basename "$file")"; unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file" ;;
+            esac
+          done
+
+          find "$GAME_DIR/extracted" -type f \
+            \( -iname '*.nsp' -o -iname '*.nsz' \) \
+            -exec cp -f {} "$GAME_DIR/nsp/" \;
+
+          if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
+            \( -iname '*.nsp' -o -iname '*.nsz' \) -print -quit | grep -q .; then
+            echo "::error::No NSP/NSZ packages found after extraction"
+            exit 1
+          fi
+
+          echo "Packages found:"
+          find "$GAME_DIR/nsp" -maxdepth 1 -type f -print
+
+      - name: Validate extracted NSP package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GAME_DIR/nsp" <<'PY'
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          files = sorted([*root.glob("*.nsp"), *root.glob("*.nsz")])
+          if not files:
+              raise SystemExit("No NSP/NSZ files found.")
+          for path in files:
+              size = path.stat().st_size
+              with path.open("rb") as f:
+                  magic = f.read(4)
+              print(f"{path.name}: {size:,} bytes; first four bytes={magic!r}")
+              if path.suffix.lower() == ".nsp" and magic != b"PFS0":
+                  raise SystemExit(f"{path.name} does not have the expected NSP PFS0 signature; archive may be wrong or corrupt.")
+          PY
+
+      - name: Identify base game title ID
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$PROFILE_OVERRIDE" ]]; then
+            DM_GAME="${PROFILE_OVERRIDE^^}"
+            DM_GAME="${DM_GAME#0X}"
+          else
+            BASE_FILE="$(
+              find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
+              grep -Ei '\[v0\]' | head -n 1 || true
+            )"
+
+            if [[ -z "$BASE_FILE" ]]; then
+              BASE_FILE="$(
+                find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
+                grep -Eiv '\[v[1-9][0-9]*\]' | head -n 1 || true
+              )"
+            fi
+
+            if [[ -z "$BASE_FILE" ]]; then
+              BASE_FILE="$(find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' | head -n 1 || true)"
+            fi
+
+            DM_GAME="$(
+              basename "$BASE_FILE" |
+              grep -Eio '\[([0-9a-f]{16})\]' | head -n 1 |
+              tr -d '[]' | tr '[:lower:]' '[:upper:]' || true
+            )"
+          fi
+
+          [[ "$DM_GAME" =~ ^[0-9A-F]{16}$ ]] || {
+            echo "::error::Could not identify title ID. Set profile_id in workflow inputs."
+            exit 1
+          }
+
+          echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
+          echo "Detected title ID: $DM_GAME"
+
+      - name: Repair shader-chain lock and header
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          export DM_GAME=0100000000010000
+
+          echo "Updating shader toolchain lock to match this runner..."
+
+          dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
+          python3 dm/gfx/tools/dmsh_chain.py --update-lock
+          python3 dm/gfx/tools/dmsh_chain.py --header
+
+          echo "Shader-chain lock and header updated."
+
+      - name: Add Goose SDK Break register diagnostics
+        if: env.DM_GAME == '010082400BCC6000'
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dm/host/hle_svc.c")
+          source = path.read_text()
+
+          old = 'LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);'
+          new = """LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);
+                  module_t *ret_mm = module_of((void *)regs[30]);
+                  LOG("[Break registers] x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx x7=%#llx x8=%#llx",
+                      regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6], regs[7], regs[8]);
+                  LOG("[Break registers] x19=%#llx x20=%#llx x21=%#llx x22=%#llx x23=%#llx x24=%#llx x25=%#llx x26=%#llx x27=%#llx x28=%#llx fp=%#llx lr=%#llx",
+                      regs[19], regs[20], regs[21], regs[22], regs[23], regs[24], regs[25], regs[26], regs[27], regs[28], regs[29], regs[30]);
+                  LOG("[Break return] %s+%#llx", ret_mm ? ret_mm->name : "?", ret_mm ? (unsigned long long)((uintptr_t)regs[30] - (uintptr_t)ret_mm->base) : 0ull);"""
+
+          if source.count(old) != 1:
+              raise SystemExit("Expected Break log line was not found exactly once; refusing to patch.")
+          path.write_text(source.replace(old, new, 1))
+          print("Installed Goose-only Break register and return-address diagnostics.")
+          PY
+
+          grep -n -A8 'Break registers' dm/host/hle_svc.c
+
+      - name: Prepare game directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GAME_DIR/GameFiles"
+
+          find "$GAME_DIR/nsp" -maxdepth 1 -type f \
+            \( -iname '*.nsp' -o -iname '*.nsz' \) \
+            -exec cp -f {} "$GAME_DIR/GameFiles/" \;
+
+          echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
+
+      - name: Build IPA using automatic profile generation
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          {
+            echo "========================================"
+            echo "nxnative build diagnostics"
+            echo "========================================"
+            echo "Build date: $(date -u)"
+            echo "Game title ID: $DM_GAME"
+            echo "Target mode: $NXNATIVE_MODE"
+            echo "Runner: $(uname -a)"
+            echo "Architecture: $(uname -m)"
+            echo "Python: $(python3 --version)"
+            echo "========================================"
+
+            echo "Starting IPA build..."
+
+            python3 scripts/build_ipa_from_nsp.py \
+              "$BUILD_GAME_DIR" \
+              -k "$GAME_DIR/keys/prod.keys" \
+              -o "$GAME_DIR/${DM_GAME}.ipa"
+
+            test -s "$GAME_DIR/${DM_GAME}.ipa"
+
+            echo "IPA successfully created:"
+            ls -lh "$GAME_DIR/${DM_GAME}.ipa"
+
+          } 2>&1 | tee "$GAME_DIR/build-diagnostics.log"
+
+      - name: Collect provisional profile and build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          DIAG_DIR="$GAME_DIR/diagnostics"
+
+          mkdir -p "$DIAG_DIR"
+
+          {
+            echo "nxnative build diagnostic summary"
+            echo "=================================="
+            echo "Date: $(date -u)"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow run: $GITHUB_RUN_ID"
+            echo "Run attempt: $GITHUB_RUN_ATTEMPT"
+            echo "Device target: $DEVICE_TARGET"
+            echo "Detected game title ID: ${DM_GAME:-not detected}"
+            echo "Build mode: ${NXNATIVE_MODE:-not detected}"
+            echo ""
+            echo "Expected provisional profile:"
+            echo "GameFiles/GameFiles/${DM_GAME:-UNKNOWN}_build/profile/${DM_GAME:-UNKNOWN}/game.tsv"
+            echo ""
+          } > "$DIAG_DIR/metadata.txt"
+
+          if [[ -f "$GAME_DIR/build-diagnostics.log" ]]; then
+            cp "$GAME_DIR/build-diagnostics.log" "$DIAG_DIR/"
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            PROFILE_DIR="$GAME_DIR/GameFiles/${DM_GAME}_build/profile/${DM_GAME}"
+
+            if [[ -d "$PROFILE_DIR" ]]; then
+              echo "Found provisional profile at: $PROFILE_DIR" \
+                >> "$DIAG_DIR/metadata.txt"
+
+              cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+            else
+              echo "Expected profile directory not found." \
+                >> "$DIAG_DIR/metadata.txt"
+
+              MATCH="$(
+                find "$GAME_DIR/GameFiles" -type f \
+                  -path "*/profile/${DM_GAME}/game.tsv" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$MATCH" ]]; then
+                PROFILE_DIR="${MATCH%/game.tsv}"
+
+                echo "Found provisional profile at alternate location: $PROFILE_DIR" \
+                  >> "$DIAG_DIR/metadata.txt"
+
+                cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+              fi
+            fi
+
+            SURVEY="$GAME_DIR/GameFiles/${DM_GAME}_survey/survey.md"
+
+            if [[ -f "$SURVEY" ]]; then
+              cp "$SURVEY" "$DIAG_DIR/survey.md"
+              echo "Collected survey.md from: $SURVEY" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              SURVEY_MATCH="$(
+                find "$GAME_DIR" -type f -name survey.md \
+                  -path "*/${DM_GAME}_survey/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$SURVEY_MATCH" ]]; then
+                cp "$SURVEY_MATCH" "$DIAG_DIR/survey.md"
+                echo "Collected survey.md from alternate location: $SURVEY_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: survey.md not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
+
+            HEAP_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/heap_check.log"
+
+            if [[ -f "$HEAP_LOG" ]]; then
+              cp "$HEAP_LOG" "$DIAG_DIR/heap_check.log"
+              echo "Collected heap_check.log from: $HEAP_LOG" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              HEAP_MATCH="$(
+                find "$GAME_DIR" -type f -name heap_check.log \
+                  -path "*/${DM_GAME}_build/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$HEAP_MATCH" ]]; then
+                cp "$HEAP_MATCH" "$DIAG_DIR/heap_check.log"
+                echo "Collected heap_check.log from alternate location: $HEAP_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: heap_check.log not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
+          fi
+
+          {
+            echo ""
+            echo "Diagnostic artifact contents:"
+            find "$DIAG_DIR" -maxdepth 4 -type f -print
+          } >> "$DIAG_DIR/metadata.txt"
+
+          echo "Diagnostic collection complete."
+
+      - name: Upload build diagnostics and provisional profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-${{ env.DM_GAME }}-diagnostics
+          path: ${{ github.workspace }}/GameFiles/diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-${{ env.DM_GAME }}-IPA
+          path: ${{ github.workspace }}/GameFiles/*.ipa
+          if-no-files-found: error
+          retention-days: 7
+Update HTTP status: %{http_code}\\nDownloaded: %{size_download} bytes\\nAverage speed: %{speed_download} bytes/sec\\nElapsed: %{time_total}s\\n' \\
+              "$UPDATE_URL"
+            test -s "$GAME_DIR/downloads/bugsnax-update.nsp" || { echo "::error::UPDATE_URL returned an empty update file."; exit 1; }
+            file "$GAME_DIR/downloads/bugsnax-update.nsp"
+            ls -lh "$GAME_DIR/downloads/bugsnax-update.nsp"
+          else
+            echo "UPDATE_URL is empty; continuing without a separate update package."
+          fi
+
 
       - name: Extract archives and collect NSP files
         shell: bash
