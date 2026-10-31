@@ -1,0 +1,65 @@
+name: Test SendCM direct download
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-sendcm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test SendCM link from GitHub runner
+        env:
+          SENDCM_URL: ${{ secrets.SENDCM_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENDCM_URL:-}" ]; then
+            echo "::error::Add SENDCM_URL as a repository Actions secret before running this test."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os, sys, time, urllib.request, urllib.error
+
+          url = os.environ["SENDCM_URL"]
+          req = urllib.request.Request(
+              url,
+              headers={
+                  "User-Agent": "Mozilla/5.0 (compatible; GitHubActions SendCM connectivity test)",
+                  "Range": "bytes=0-1048575",
+              },
+          )
+          started = time.monotonic()
+          try:
+              response = urllib.request.urlopen(req, timeout=45)
+          except Exception as exc:
+              print(f"REQUEST FAILED: {type(exc).__name__}: {exc}")
+              sys.exit(1)
+
+          status = response.status
+          headers = response.headers
+          content_type = headers.get("Content-Type", "unknown")
+          content_range = headers.get("Content-Range", "not supplied")
+          disposition = headers.get("Content-Disposition", "not supplied")
+          data = response.read(1024 * 1024)
+          elapsed = max(time.monotonic() - started, 0.001)
+
+          print(f"HTTP status: {status}")
+          print(f"Content-Type: {content_type}")
+          print(f"Content-Range: {content_range}")
+          print(f"Content-Disposition: {disposition}")
+          print(f"Bytes received for test: {len(data):,}")
+          print(f"Elapsed: {elapsed:.2f} seconds")
+          print(f"Test throughput: {len(data) / elapsed / 1024:.1f} KiB/s")
+
+          if status not in (200, 206):
+              print("RESULT: Host returned an unexpected HTTP status.")
+              sys.exit(1)
+          if "text/html" in content_type.lower() or data.lstrip().lower().startswith((b"<!doctype html", b"<html")):
+              print("RESULT: The URL returned an HTML page, not the archive. It may require a session, CAPTCHA, or another redirect.")
+              sys.exit(1)
+          if len(data) == 0:
+              print("RESULT: No file data received.")
+              sys.exit(1)
+          print("RESULT: GitHub runner received file data. This confirms access, but does not yet prove a complete large-file download.")
+          response.close()
+          PY
