@@ -221,7 +221,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
 
           classify_archive() {
@@ -229,11 +228,11 @@ jobs:
             local file_type
             file_type="$(file -b "$destination")"
             case "$file_type" in
-              *"Zip archive"*) mv "$destination" "${destination}.zip" ;;
-              *"RAR archive"*) mv "$destination" "${destination}.rar" ;;
-              *"7-zip archive"*) mv "$destination" "${destination}.7z" ;;
-              *"gzip compressed"*) mv "$destination" "${destination}.tar.gz" ;;
-              *) mv "$destination" "${destination}.nsp" ;;
+              *"Zip archive"*) mv "$destination" "$destination.zip" ;;
+              *"RAR archive"*) mv "$destination" "$destination.rar" ;;
+              *"7-zip archive"*) mv "$destination" "$destination.7z" ;;
+              *"gzip compressed"*) mv "$destination" "$destination.tar.gz" ;;
+              *) mv "$destination" "$destination.nsp" ;;
             esac
           }
 
@@ -242,25 +241,132 @@ jobs:
             local destination="$2"
             local label="$3"
             [[ -n "$filename" ]] || { echo "Skipping optional $label."; return 0; }
-
             local encoded
             encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$filename")"
-            echo "Downloading $label directly from iPhone: $filename"
-            curl --fail --show-error --location --retry 3 --retry-delay 2 \
-              --connect-timeout 20 --output "$destination" \
-              "http://100.124.74.102:49215/$encoded"
+            local url="http://100.124.74.102:49215/$encoded"
+            echo "Downloading $label in resumable 16 MiB HTTP range chunks: $filename"
+
+            python3 - "$url" "$destination" "$label" <<'PY'
+          import os, re, sys, time, urllib.request
+          from pathlib import Path
+
+          url, destination, label = sys.argv[1:4]
+          destination = Path(destination)
+          chunk_size = 16 * 1024 * 1024
+          block_size = 1024 * 1024
+          max_attempts = 8
+
+          def get_range(start, end):
+              req = urllib.request.Request(url, headers={
+                  "Range": f"bytes={start}-{end}",
+                  "Accept-Encoding": "identity",
+                  "User-Agent": "nxnative-GitHub-Actions/1.0",
+              })
+              return urllib.request.urlopen(req, timeout=60)
+
+          print(f"[{label}] Checking byte-range support...", flush=True)
+          with get_range(0, 0) as response:
+              if response.status != 206:
+                  raise SystemExit(f"[{label}] Expected HTTP 206 for range probe; got {response.status}")
+              match = re.fullmatch(r"bytes 0-0/(\d+)", response.headers.get("Content-Range", ""))
+              if not match:
+                  raise SystemExit(f"[{label}] Invalid Content-Range: {response.headers.get('Content-Range')!r}")
+              total = int(match.group(1))
+          if total <= 0:
+              raise SystemExit(f"[{label}] Server reported an empty file.")
+
+          print(f"[{label}] Size: {total:,} bytes ({total / 1024**3:.2f} GiB)", flush=True)
+          print(f"[{label}] Chunks: 16 MiB; retry limit: {max_attempts} per chunk", flush=True)
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          partial = destination.with_name(destination.name + ".partial")
+          piece = destination.with_name(destination.name + ".chunk")
+          partial.unlink(missing_ok=True)
+          started = time.monotonic()
+          completed = 0
+          last_report = 0
+
+          try:
+              with partial.open("wb") as output:
+                  for start in range(0, total, chunk_size):
+                      end = min(start + chunk_size, total) - 1
+                      expected = end - start + 1
+                      for attempt in range(1, max_attempts + 1):
+                          received = 0
+                          try:
+                              with get_range(start, end) as response:
+                                  if response.status != 206:
+                                      raise RuntimeError(f"Expected HTTP 206, got {response.status}")
+                                  wanted = f"bytes {start}-{end}/{total}"
+                                  actual = response.headers.get("Content-Range", "")
+                                  if actual != wanted:
+                                      raise RuntimeError(f"Content-Range mismatch: {actual!r}; expected {wanted!r}")
+                                  with piece.open("wb") as part:
+                                      while True:
+                                          data = response.read(block_size)
+                                          if not data:
+                                              break
+                                          part.write(data)
+                                          received += len(data)
+                                          now = time.monotonic()
+                                          if now - last_report >= 5:
+                                              elapsed = max(now - started, 0.001)
+                                              speed = (completed + received) / elapsed
+                                              eta = (total - completed - received) / speed if speed else 0
+                                              print(
+                                                  f"[{label}] {100*(completed+received)/total:5.1f}% | "
+                                                  f"{(completed+received)/1024**2:,.1f}/{total/1024**2:,.1f} MiB | "
+                                                  f"{speed/1024**2:.2f} MiB/s | ETA {time.strftime('%H:%M:%S', time.gmtime(eta))}",
+                                                  flush=True,
+                                              )
+                                              last_report = now
+                              if received != expected:
+                                  raise RuntimeError(f"Short chunk: {received:,}/{expected:,} bytes")
+                              with piece.open("rb") as part:
+                                  while data := part.read(block_size):
+                                      output.write(data)
+                              output.flush()
+                              piece.unlink(missing_ok=True)
+                              completed += expected
+                              elapsed = max(time.monotonic() - started, 0.001)
+                              speed = completed / elapsed
+                              eta = (total - completed) / speed if speed else 0
+                              print(
+                                  f"[{label}] Chunk saved: {completed:,}/{total:,} bytes "
+                                  f"({100*completed/total:.1f}%) | {speed/1024**2:.2f} MiB/s | "
+                                  f"ETA {time.strftime('%H:%M:%S', time.gmtime(eta))}",
+                                  flush=True,
+                              )
+                              break
+                          except Exception as error:
+                              piece.unlink(missing_ok=True)
+                              if attempt == max_attempts:
+                                  raise RuntimeError(f"Chunk {start}-{end} failed after {max_attempts} attempts: {error}") from error
+                              delay = min(5 * attempt, 30)
+                              print(f"[{label}] Chunk failed (attempt {attempt}/{max_attempts}): {error}; retrying in {delay}s", flush=True)
+                              time.sleep(delay)
+                      else:
+                          raise RuntimeError(f"Could not download chunk starting at byte {start}")
+
+              if partial.stat().st_size != total:
+                  raise RuntimeError(f"Final size mismatch: {partial.stat().st_size:,} != {total:,}")
+              os.replace(partial, destination)
+              elapsed = max(time.monotonic() - started, 0.001)
+              print(f"[{label}] DOWNLOAD COMPLETE: {total:,} bytes in {elapsed/60:.1f} minutes.", flush=True)
+          finally:
+              piece.unlink(missing_ok=True)
+              if partial.exists():
+                  print(f"[{label}] Incomplete partial retained at {partial}", flush=True)
+          PY
+
             test -s "$destination"
             if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
           }
 
           download_url_file() {
-            local url="$1"
-            local destination="$2"
-            local label="$3"
+            local url="$1" destination="$2" label="$3"
             [[ -n "$url" ]] || { echo "Skipping optional $label."; return 0; }
             echo "Downloading $label from configured URL..."
-            curl --fail --show-error --location --retry 3 --retry-delay 2 \
-              --output "$destination" "$url"
+            curl --fail --show-error --location --retry 3 --retry-delay 2 --output "$destination" "$url"
             test -s "$destination"
             if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
           }
@@ -270,6 +376,7 @@ jobs:
             download_webdav_file "$UPDATE_FILENAME" "$GAME_DIR/downloads/update" "update"
             download_webdav_file "$DLC_FILENAME" "$GAME_DIR/downloads/dlc" "DLC"
             download_webdav_file "$KEYS_FILENAME" "$GAME_DIR/keys/prod.keys" "prod.keys"
+            echo "All iPhone WebDAV transfers are complete. It is now safe to switch away from PocketServer."
           else
             download_url_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
             download_url_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
@@ -277,10 +384,7 @@ jobs:
             download_url_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
           fi
 
-          test -s "$GAME_DIR/keys/prod.keys" || {
-            echo "::error::prod.keys download failed"
-            exit 1
-          }
+          test -s "$GAME_DIR/keys/prod.keys" || { echo "::error::prod.keys download failed"; exit 1; }
 
       - name: Extract archives and collect NSP files
         shell: bash
