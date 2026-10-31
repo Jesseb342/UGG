@@ -1,0 +1,52 @@
+name: Test iPhone WebDAV over Tailscale
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-webdav:
+    name: Verify GitHub runner can reach iPhone
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Connect GitHub runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: 100.124.74.102
+
+      - name: Probe iPhone WebDAV without downloading files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response_file="$RUNNER_TEMP/iphone-webdav.xml"
+          status="$(curl --silent --show-error --max-time 20 \
+            --output "$response_file" \
+            --write-out '%{http_code}' \
+            --request PROPFIND \
+            --header 'Depth: 1' \
+            'http://100.124.74.102:49215/')"
+
+          echo "WebDAV HTTP status: $status"
+
+          if [[ "$status" != "207" ]]; then
+            echo "::error::Expected WebDAV HTTP 207 Multi-Status; received $status"
+            head -c 1000 "$response_file" || true
+            exit 1
+          fi
+
+          grep -q '<D:multistatus' "$response_file" || {
+            echo "::error::HTTP 207 response did not contain a WebDAV multistatus document"
+            head -c 1000 "$response_file" || true
+            exit 1
+          }
+
+          echo "SUCCESS: GitHub Actions reached PocketServer on the iPhone through Tailscale."
+          echo "No game file was downloaded or uploaded during this test."
