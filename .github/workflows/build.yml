@@ -174,7 +174,24 @@ jobs:
                   if not data: break
                   dst.write(data)
           if not os.path.isfile(path) or os.path.getsize(path) == 0: raise SystemExit("prod.keys download failed")
-          print("prod.keys downloaded successfully")
+          with open(path, "rb") as f:
+              raw = f.read()
+          if raw.lstrip().lower().startswith((b"<!doctype html", b"<html")):
+              raise SystemExit("Keys_URL returned an HTML page, not a prod.keys file")
+          try:
+              text = raw.decode("utf-8")
+          except UnicodeDecodeError:
+              raise SystemExit("Keys_URL did not return a readable prod.keys text file")
+          entries = {}
+          for line in text.splitlines():
+              line = line.split("#", 1)[0].strip()
+              if "=" in line:
+                  name, value = line.split("=", 1)
+                  entries[name.strip()] = value.strip()
+          header = entries.get("header_key", "")
+          if len(header) != 32 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
+              raise SystemExit("prod.keys is missing a valid 32-hex-character header_key. Replace Keys_URL with a current, complete prod.keys file.")
+          print(f"prod.keys downloaded and validated ({len(raw):,} bytes); header_key is present.")
           PY
 
       - name: Extract archives and collect NSP files
@@ -217,6 +234,25 @@ jobs:
 
           echo "Packages found:"
           find "$GAME_DIR/nsp" -maxdepth 1 -type f -print
+
+      - name: Validate extracted NSP package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GAME_DIR/nsp" <<'PY'
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          files = sorted([*root.glob("*.nsp"), *root.glob("*.nsz")])
+          if not files:
+              raise SystemExit("No NSP/NSZ files found.")
+          for path in files:
+              size = path.stat().st_size
+              with path.open("rb") as f:
+                  magic = f.read(4)
+              print(f"{path.name}: {size:,} bytes; first four bytes={magic!r}")
+              if path.suffix.lower() == ".nsp" and magic != b"PFS0":
+                  raise SystemExit(f"{path.name} does not have the expected NSP PFS0 signature; archive may be wrong or corrupt.")
+          PY
 
       - name: Identify base game title ID
         shell: bash
