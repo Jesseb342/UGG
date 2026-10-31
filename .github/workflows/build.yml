@@ -15,43 +15,6 @@ on:
         description: "Optional base-game title ID override, e.g. 0100B99019412000"
         required: false
         type: string
-      transfer_source:
-        description: "Where to retrieve game files"
-        required: true
-        type: choice
-        default: "iPhone WebDAV"
-        options:
-          - "iPhone WebDAV"
-          - "Existing URL secrets"
-      game_filename:
-        description: "Choose the base game from the iPhone WebDAV folder"
-        required: true
-        type: choice
-        options:
-          - "RAYMLEGDE-NSwTcH-[BASE]-NSP-Ziperto.rar"
-          - "UGG-(RF)-NSwTcH-NSP-Ziperto.rar"
-      update_filename:
-        description: "Choose an update, or None"
-        required: true
-        default: "None"
-        type: choice
-        options:
-          - "None"
-          - "RAYMLEGDE-NSwTcH-NSP-Update12-Ziperto.rar"
-          - "UGG-NSwTcH-NSP-Update112-Ziperto.rar"
-      dlc_filename:
-        description: "Choose DLC, or None (no DLC package is currently listed)"
-        required: true
-        default: "None"
-        type: choice
-        options:
-          - "None"
-      keys_filename:
-        description: "Exact prod.keys filename in PocketServer (iPhone WebDAV mode)"
-        required: false
-        default: "prod.keys"
-        type: string
-
 permissions:
   contents: read
 
@@ -70,27 +33,19 @@ jobs:
       UPDATE_URL: ${{ secrets.Update_URL }}
       DLC_URL: ${{ secrets.DLC_URL }}
       KEYS_URL: ${{ secrets.Keys_URL }}
+      REAL_DEBRID_TOKEN: ${{ secrets.REAL_DEBRID_TOKEN }}
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
       GAME_DIR: ${{ github.workspace }}/GameFiles
-      TRANSFER_SOURCE: ${{ inputs.transfer_source }}
-      GAME_FILENAME: ${{ inputs.game_filename }}
-      UPDATE_FILENAME: ${{ inputs.update_filename == 'None' && '' || inputs.update_filename }}
-      DLC_FILENAME: ${{ inputs.dlc_filename == 'None' && '' || inputs.dlc_filename }}
-      KEYS_FILENAME: ${{ inputs.keys_filename }}
 
     steps:
-      - name: Check selected file source
+      - name: Validate Real-Debrid inputs
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$TRANSFER_SOURCE" == "iPhone WebDAV" ]]; then
-            [[ -n "$GAME_FILENAME" ]] || { echo "::error::Enter game_filename"; exit 1; }
-            [[ -n "$KEYS_FILENAME" ]] || { echo "::error::Enter keys_filename"; exit 1; }
-          else
-            [[ -n "$GAME_URL" ]] || { echo "::error::Missing Game_URL"; exit 1; }
-            [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL"; exit 1; }
-          fi
+          [[ -n "$GAME_URL" ]] || { echo "::error::Missing Game_URL (put both Bugsnax base-game RAR links in this secret, one per line)."; exit 1; }
+          [[ -n "$REAL_DEBRID_TOKEN" ]] || { echo "::error::Missing REAL_DEBRID_TOKEN."; exit 1; }
+          [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL (prod.keys direct download URL)."; exit 1; }
 
       - name: Install .NET 10 SDK
         shell: bash
@@ -177,238 +132,133 @@ jobs:
 
           "$TRANSLATOR" --source-sha
 
-      - name: Connect runner to iPhone over Tailscale
-        if: inputs.transfer_source == 'iPhone WebDAV'
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          ping: 100.124.74.102
-          args: --accept-dns=false
-
-      - name: Diagnose iPhone WebDAV connectivity
-        if: inputs.transfer_source == 'iPhone WebDAV'
-        shell: bash
-        run: |
-          set +e
-          echo "=== Tailscale status ==="
-          tailscale status
-          echo ""
-          echo "=== Tailscale network check ==="
-          tailscale netcheck
-          echo ""
-          echo "=== TCP port 49215 test ==="
-          nc -vz -G 8 100.124.74.102 49215
-          TCP_RESULT=$?
-          echo "TCP test exit code: $TCP_RESULT"
-          echo ""
-          echo "=== WebDAV PROPFIND test ==="
-          curl --verbose --max-time 20 -X PROPFIND \
-            -H "Depth: 1" \
-            "http://100.124.74.102:49215/" \
-            -o "$RUNNER_TEMP/webdav-propfind.xml"
-          HTTP_RESULT=$?
-          echo "PROPFIND curl exit code: $HTTP_RESULT"
-          if [[ -f "$RUNNER_TEMP/webdav-propfind.xml" ]]; then
-            head -c 2000 "$RUNNER_TEMP/webdav-propfind.xml"
-            echo
-          fi
-          echo ""
-          echo "Diagnostics complete; the download step will now run."
-
-      - name: Download game, optional update/DLC, and keys
+      - name: Resolve and download files through Real-Debrid
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
 
-          classify_archive() {
-            local destination="$1"
-            local file_type
-            file_type="$(file -b "$destination")"
-            case "$file_type" in
-              *"Zip archive"*) mv "$destination" "$destination.zip" ;;
-              *"RAR archive"*) mv "$destination" "$destination.rar" ;;
-              *"7-zip archive"*) mv "$destination" "$destination.7z" ;;
-              *"gzip compressed"*) mv "$destination" "$destination.tar.gz" ;;
-              *) mv "$destination" "$destination.nsp" ;;
-            esac
-          }
-
-          download_webdav_file() {
-            local filename="$1"
-            local destination="$2"
-            local label="$3"
-            [[ -n "$filename" ]] || { echo "Skipping optional $label."; return 0; }
-            local encoded
-            encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$filename")"
-            local url="http://100.124.74.102:49215/$encoded"
-            echo "Downloading $label in resumable 16 MiB HTTP range chunks: $filename"
-
-            python3 - "$url" "$destination" "$label" <<'PY'
-          import os, re, sys, time, urllib.request
+          python3 - "$GAME_URL" "$UPDATE_URL" "$DLC_URL" "$KEYS_URL" "$REAL_DEBRID_TOKEN" "$GAME_DIR/downloads" "$GAME_DIR/keys" <<'PY'
+          import json, re, sys, urllib.parse, urllib.request
           from pathlib import Path
 
-          url, destination, label = sys.argv[1:4]
-          destination = Path(destination)
-          chunk_size = 16 * 1024 * 1024
-          block_size = 1024 * 1024
-          max_attempts = 8
+          game_raw, update_raw, dlc_raw, keys_url, token, downloads_dir, keys_dir = sys.argv[1:]
+          downloads = Path(downloads_dir)
+          keys = Path(keys_dir)
 
-          def get_range(start, end):
-              req = urllib.request.Request(url, headers={
-                  "Range": f"bytes={start}-{end}",
-                  "Accept-Encoding": "identity",
-                  "User-Agent": "nxnative-GitHub-Actions/1.0",
-              })
-              return urllib.request.urlopen(req, timeout=60)
+          def urls_from_secret(value):
+              return [u.rstrip(";,") for u in re.findall(r"https?://[^\s]+", value or "") if u.rstrip(";,")]
 
-          print(f"[{label}] Checking byte-range support...", flush=True)
-          with get_range(0, 0) as response:
-              if response.status != 206:
-                  raise SystemExit(f"[{label}] Expected HTTP 206 for range probe; got {response.status}")
-              match = re.fullmatch(r"bytes 0-0/(\d+)", response.headers.get("Content-Range", ""))
-              if not match:
-                  raise SystemExit(f"[{label}] Invalid Content-Range: {response.headers.get('Content-Range')!r}")
-              total = int(match.group(1))
-          if total <= 0:
-              raise SystemExit(f"[{label}] Server reported an empty file.")
+          def safe_name(name, fallback):
+              name = Path(str(name or "")).name
+              name = re.sub(r"[^A-Za-z0-9._() -]", "_", name).strip(" .")
+              return name or fallback
 
-          print(f"[{label}] Size: {total:,} bytes ({total / 1024**3:.2f} GiB)", flush=True)
-          print(f"[{label}] Chunks: 16 MiB; retry limit: {max_attempts} per chunk", flush=True)
-          destination.parent.mkdir(parents=True, exist_ok=True)
-          partial = destination.with_name(destination.name + ".partial")
-          piece = destination.with_name(destination.name + ".chunk")
-          partial.unlink(missing_ok=True)
-          started = time.monotonic()
-          completed = 0
-          last_report = 0
-
-          try:
-              with partial.open("wb") as output:
-                  for start in range(0, total, chunk_size):
-                      end = min(start + chunk_size, total) - 1
-                      expected = end - start + 1
-                      for attempt in range(1, max_attempts + 1):
-                          received = 0
-                          try:
-                              with get_range(start, end) as response:
-                                  if response.status != 206:
-                                      raise RuntimeError(f"Expected HTTP 206, got {response.status}")
-                                  wanted = f"bytes {start}-{end}/{total}"
-                                  actual = response.headers.get("Content-Range", "")
-                                  if actual != wanted:
-                                      raise RuntimeError(f"Content-Range mismatch: {actual!r}; expected {wanted!r}")
-                                  with piece.open("wb") as part:
-                                      while True:
-                                          data = response.read(block_size)
-                                          if not data:
-                                              break
-                                          part.write(data)
-                                          received += len(data)
-                                          now = time.monotonic()
-                                          if now - last_report >= 5:
-                                              elapsed = max(now - started, 0.001)
-                                              speed = (completed + received) / elapsed
-                                              eta = (total - completed - received) / speed if speed else 0
-                                              print(
-                                                  f"[{label}] {100*(completed+received)/total:5.1f}% | "
-                                                  f"{(completed+received)/1024**2:,.1f}/{total/1024**2:,.1f} MiB | "
-                                                  f"{speed/1024**2:.2f} MiB/s | ETA {time.strftime('%H:%M:%S', time.gmtime(eta))}",
-                                                  flush=True,
-                                              )
-                                              last_report = now
-                              if received != expected:
-                                  raise RuntimeError(f"Short chunk: {received:,}/{expected:,} bytes")
-                              with piece.open("rb") as part:
-                                  while data := part.read(block_size):
-                                      output.write(data)
-                              output.flush()
-                              piece.unlink(missing_ok=True)
-                              completed += expected
-                              elapsed = max(time.monotonic() - started, 0.001)
-                              speed = completed / elapsed
-                              eta = (total - completed) / speed if speed else 0
-                              print(
-                                  f"[{label}] Chunk saved: {completed:,}/{total:,} bytes "
-                                  f"({100*completed/total:.1f}%) | {speed/1024**2:.2f} MiB/s | "
-                                  f"ETA {time.strftime('%H:%M:%S', time.gmtime(eta))}",
-                                  flush=True,
-                              )
+          def unrestrict_and_download(url, fallback):
+              data = urllib.parse.urlencode({"link": url}).encode()
+              req = urllib.request.Request(
+                  "https://api.real-debrid.com/rest/1.0/unrestrict/link",
+                  data=data,
+                  headers={
+                      "Authorization": "Bearer " + token,
+                      "Content-Type": "application/x-www-form-urlencoded",
+                      "User-Agent": "nxnative-GitHub-Actions/1.0",
+                  },
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      result = json.loads(response.read().decode("utf-8"))
+              except Exception as exc:
+                  raise RuntimeError(f"Real-Debrid could not resolve a hoster link ({type(exc).__name__}: {exc}). Check link validity and current hoster support.") from exc
+              direct = result.get("download")
+              if not direct:
+                  raise RuntimeError("Real-Debrid response did not contain a download URL: " + json.dumps(result)[:1000])
+              filename = safe_name(result.get("filename"), fallback)
+              target = downloads / filename
+              if target.exists():
+                  stem, suffix = target.stem, target.suffix
+                  n = 2
+                  while target.exists():
+                      target = downloads / f"{stem}_{n}{suffix}"
+                      n += 1
+              print(f"Downloading {target.name} from Real-Debrid...", flush=True)
+              request = urllib.request.Request(direct, headers={"User-Agent": "nxnative-GitHub-Actions/1.0"})
+              try:
+                  with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
+                      total = int(response.headers.get("Content-Length", "0") or 0)
+                      received = 0
+                      while True:
+                          block = response.read(4 * 1024 * 1024)
+                          if not block:
                               break
-                          except Exception as error:
-                              piece.unlink(missing_ok=True)
-                              if attempt == max_attempts:
-                                  raise RuntimeError(f"Chunk {start}-{end} failed after {max_attempts} attempts: {error}") from error
-                              delay = min(5 * attempt, 30)
-                              print(f"[{label}] Chunk failed (attempt {attempt}/{max_attempts}): {error}; retrying in {delay}s", flush=True)
-                              time.sleep(delay)
-                      else:
-                          raise RuntimeError(f"Could not download chunk starting at byte {start}")
+                          output.write(block)
+                          received += len(block)
+                          if total:
+                              print(f"  {target.name}: {received/1024**2:,.0f}/{total/1024**2:,.0f} MiB ({100*received/total:.1f}%)", flush=True)
+                  if not target.exists() or target.stat().st_size == 0:
+                      raise RuntimeError(f"Downloaded file is empty: {target.name}")
+                  print(f"Downloaded {target.name}: {target.stat().st_size:,} bytes", flush=True)
+              except Exception:
+                  target.unlink(missing_ok=True)
+                  raise
 
-              if partial.stat().st_size != total:
-                  raise RuntimeError(f"Final size mismatch: {partial.stat().st_size:,} != {total:,}")
-              os.replace(partial, destination)
-              elapsed = max(time.monotonic() - started, 0.001)
-              print(f"[{label}] DOWNLOAD COMPLETE: {total:,} bytes in {elapsed/60:.1f} minutes.", flush=True)
-          finally:
-              piece.unlink(missing_ok=True)
-              if partial.exists():
-                  print(f"[{label}] Incomplete partial retained at {partial}", flush=True)
+          def download_group(raw, label):
+              links = urls_from_secret(raw)
+              if not links:
+                  if label in ("optional update", "optional DLC"):
+                      print(f"No {label} link configured; skipping.", flush=True)
+                      return
+                  raise RuntimeError(f"No links found in the {label} secret.")
+              print(f"{label}: resolving {len(links)} link(s) through Real-Debrid.", flush=True)
+              for index, link in enumerate(links, 1):
+                  print(f"{label}: resolving link {index}/{len(links)}", flush=True)
+                  unrestrict_and_download(link, f"{label.replace(' ', '_')}_{index}.rar")
+
+          download_group(game_raw, "base game")
+          download_group(update_raw, "optional update")
+          download_group(dlc_raw, "optional DLC")
+
+          print("Downloading prod.keys...", flush=True)
+          key_req = urllib.request.Request(keys_url, headers={"User-Agent": "nxnative-GitHub-Actions/1.0"})
+          with urllib.request.urlopen(key_req, timeout=120) as response, (keys / "prod.keys").open("wb") as output:
+              while True:
+                  block = response.read(1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+          if not (keys / "prod.keys").is_file() or (keys / "prod.keys").stat().st_size == 0:
+              raise RuntimeError("prod.keys download failed or returned an empty file.")
+          print(f"prod.keys downloaded: {(keys / 'prod.keys').stat().st_size:,} bytes", flush=True)
           PY
 
-            test -s "$destination"
-            if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
-          }
-
-          download_url_file() {
-            local url="$1" destination="$2" label="$3"
-            [[ -n "$url" ]] || { echo "Skipping optional $label."; return 0; }
-            echo "Downloading $label from configured URL..."
-            curl --fail --show-error --location --retry 3 --retry-delay 2 --output "$destination" "$url"
-            test -s "$destination"
-            if [[ "$label" != "prod.keys" ]]; then classify_archive "$destination"; fi
-          }
-
-          if [[ "$TRANSFER_SOURCE" == "iPhone WebDAV" ]]; then
-            download_webdav_file "$GAME_FILENAME" "$GAME_DIR/downloads/game" "base game"
-            download_webdav_file "$UPDATE_FILENAME" "$GAME_DIR/downloads/update" "update"
-            download_webdav_file "$DLC_FILENAME" "$GAME_DIR/downloads/dlc" "DLC"
-            download_webdav_file "$KEYS_FILENAME" "$GAME_DIR/keys/prod.keys" "prod.keys"
-            echo "All iPhone WebDAV transfers are complete. It is now safe to switch away from PocketServer."
-          else
-            download_url_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
-            download_url_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
-            download_url_file "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
-            download_url_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
-          fi
-
-          test -s "$GAME_DIR/keys/prod.keys" || { echo "::error::prod.keys download failed"; exit 1; }
+          find "$GAME_DIR/downloads" -maxdepth 1 -type f -print
 
       - name: Extract archives and collect NSP files
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
-
           shopt -s nullglob
 
+          # Extract each independent archive. For multipart RAR sets named
+          # *.part1.rar, extract only part1; unar reads the remaining volumes.
           for file in "$GAME_DIR"/downloads/*; do
             [[ -f "$file" ]] || continue
-
-            case "$file" in
-              *.zip|*.ZIP)
-                ditto -x -k "$file" "$GAME_DIR/extracted" ;;
-              *.rar|*.RAR)
-                unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file" ;;
-              *.7z|*.7Z)
-                7z x -y "-o$GAME_DIR/extracted" "$file" ;;
-              *.tar.gz|*.tgz)
-                tar -xzf "$file" -C "$GAME_DIR/extracted" ;;
-              *)
-                cp -f "$file" "$GAME_DIR/extracted/$(basename "$file")" ;;
+            lower="${file,,}"
+            case "$lower" in
+              *.zip) ditto -x -k "$file" "$GAME_DIR/extracted" ;;
+              *.rar)
+                if [[ "$lower" =~ \.part([2-9][0-9]*)\.rar$ ]]; then
+                  echo "Skipping later RAR volume (handled by part1): $(basename "$file")"
+                  continue
+                fi
+                unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file"
+                ;;
+              *.7z) 7z x -y "-o$GAME_DIR/extracted" "$file" ;;
+              *.tar.gz|*.tgz) tar -xzf "$file" -C "$GAME_DIR/extracted" ;;
+              *.nsp|*.nsz) cp -f "$file" "$GAME_DIR/extracted/" ;;
+              *) echo "Unrecognized archive extension, attempting unar: $(basename "$file")"; unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file" ;;
             esac
           done
 
@@ -416,13 +266,9 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
 
-          find "$GAME_DIR/downloads" -maxdepth 1 -type f \
-            \( -iname '*.nsp' -o -iname '*.nsz' \) \
-            -exec cp -f {} "$GAME_DIR/nsp/" \;
-
           if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) -print -quit | grep -q .; then
-            echo "::error::No NSP/NSZ packages found"
+            echo "::error::No NSP/NSZ packages found after extraction"
             exit 1
           fi
 
@@ -488,63 +334,6 @@ jobs:
           python3 dm/gfx/tools/dmsh_chain.py --header
 
           echo "Shader-chain lock and header updated."
-
-      - name: Patch AAC movie decoder for Mario vs Donkey Kong only
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-
-          if [[ "$DM_GAME" != "0100B99019412000" ]]; then
-            echo "Not Mario vs Donkey Kong. Skipping AAC patch."
-            exit 0
-          fi
-
-          FILE="dm/host/hle_movie.c"
-
-          test -f "$FILE" || {
-            echo "::error::Movie decoder source not found: $FILE"
-            exit 1
-          }
-
-          python3 - "$FILE" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          path = pathlib.Path(sys.argv[1])
-          text = path.read_text()
-
-          text, count = re.subn(
-              r'(#\s*define\s+MD_NOUT\s+)64\b',
-              r'\g<1>32',
-              text,
-              count=1
-          )
-
-          if count != 1:
-              raise SystemExit("Could not safely find '#define MD_NOUT 64'.")
-
-          pattern = r'\*size\s*=\s*MD_PCM_CAP\s*;\s*\*mode\s*=\s*d->mode\s*;'
-
-          replacement = (
-              'int sbr = d->vhdr_n[0] > 0 && '
-              '((d->vhdr[0][0] >> 3) == 5 || '
-              '(d->vhdr[0][0] >> 3) == 29); '
-              '*size = d->type == MD_TYPE_AAC && d->ch > 0 '
-              '? 1024 * (sbr ? 2 : 1) * d->ch * 2 : MD_PCM_CAP; '
-              '*mode = d->mode;'
-          )
-
-          text, size_count = re.subn(pattern, replacement, text, count=1)
-
-          if size_count != 1:
-              raise SystemExit("Could not safely find the expected buffer-size assignment.")
-
-          path.write_text(text)
-
-          print("Applied Mario AAC output-slot and buffer-size fix.")
-          PY
 
       - name: Add Goose SDK Break register diagnostics
         if: env.DM_GAME == '010082400BCC6000'
