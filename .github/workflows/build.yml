@@ -92,16 +92,6 @@ jobs:
             [[ -n "$KEYS_URL" ]] || { echo "::error::Missing Keys_URL"; exit 1; }
           fi
 
-      - name: Connect runner to iPhone over Tailscale
-        if: inputs.transfer_source == 'iPhone WebDAV'
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          ping: 100.124.74.102
-          args: --accept-dns=false
-
       - name: Install .NET 10 SDK
         shell: bash
         run: |
@@ -117,6 +107,16 @@ jobs:
           echo "$RUNNER_TEMP/dotnet" >> "$GITHUB_PATH"
           echo "DOTNET_ROOT=$RUNNER_TEMP/dotnet" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/dotnet/dotnet" --info
+
+      - name: Connect runner to iPhone over Tailscale
+        if: inputs.transfer_source == 'iPhone WebDAV'
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: 100.124.74.102
+          args: --accept-dns=false
 
       - name: Install build dependencies
         shell: bash
