@@ -168,7 +168,7 @@ jobs:
           rclone config create pocketserver webdav url "$POCKETSERVER_URL" vendor other
           echo "PocketServer contents:"
           rclone lsf pocketserver:/ --recursive
-          rclone copy pocketserver:/ "$GAME_DIR/downloads" --progress --transfers 3 --checkers 4 --retries 3
+          rclone copy pocketserver:/ "$GAME_DIR/downloads" --progress --transfers 6 --checkers 4 --retries 3
           find "$GAME_DIR/downloads" -type f -print -quit | grep -q . || { echo "::error::No files found in the PocketServer shared folder."; exit 1; }
           find "$GAME_DIR/downloads" -maxdepth 4 -type f -print
           python3 - "$KEYS_URL" "$GAME_DIR/keys/prod.keys" <<'PY'
