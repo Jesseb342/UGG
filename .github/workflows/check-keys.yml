@@ -25,11 +25,26 @@ jobs:
           if not encoded:
               sys.exit("ERROR: The Keys_URL secret is empty.")
 
-          compact = re.sub(r"\\s+", "", encoded)
+          # Remove ordinary whitespace and tolerate URL-safe Base64 or missing padding.
+          compact = re.sub(r"\s+", "", encoded)
+          if compact.startswith("data:") and "," in compact:
+              compact = compact.split(",", 1)[1]
+
+          url_safe = "-" in compact or "_" in compact
+          normalized = compact.replace("-", "+").replace("_", "/")
+          normalized += "=" * ((-len(normalized)) % 4)
+
           try:
-              raw = base64.b64decode(compact, validate=True)
-          except Exception as exc:
-              sys.exit(f"ERROR: Keys_URL is not valid Base64 ({type(exc).__name__}).")
+              raw = base64.b64decode(normalized, validate=True)
+          except Exception:
+              if re.match(r"^https?://", encoded, re.IGNORECASE):
+                  sys.exit("ERROR: Keys_URL contains a web URL, not Base64. This workflow expects Base64 text made from the plain-text prod.keys file.")
+              invalid = sorted(set(ch for ch in compact if ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="))
+              print(f"Secret character count: {len(encoded)}")
+              print(f"Whitespace removed: {len(encoded) - len(compact)}")
+              print(f"URL-safe Base64 characters present: {'yes' if url_safe else 'no'}")
+              print(f"Unexpected character count: {len(invalid)}")
+              sys.exit("ERROR: Keys_URL is not valid Base64. Re-copy the complete Base64 output; do not include labels, quotes, or surrounding text.")
 
           print(f"Decoded byte count: {len(raw)}")
           if not raw:
@@ -55,7 +70,7 @@ jobs:
           print(f"Parsed key names ({len(names)}): " + (", ".join(names) if names else "(none)"))
 
           if not names:
-              if re.fullmatch(r"[A-Za-z0-9+/=\\s]+", text):
+              if re.fullmatch(r"[A-Za-z0-9+/=\s]+", text):
                   sys.exit("ERROR: Decoded content looks like Base64 text rather than a prod.keys file. It may have been Base64-encoded twice.")
               sys.exit("ERROR: No key=value entries were found. Expected plain-text prod.keys lines such as header_key = ...")
 
