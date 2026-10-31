@@ -172,8 +172,13 @@ jobs:
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   old = urllib.parse.urlsplit(req.full_url)
                   new = urllib.parse.urlsplit(newurl)
+                  old_keys = sorted({key for key, _ in urllib.parse.parse_qsl(old.query, keep_blank_values=True)})
+                  new_keys = sorted({key for key, _ in urllib.parse.parse_qsl(new.query, keep_blank_values=True)})
+                  same_url = urllib.parse.urlunsplit(old) == urllib.parse.urlunsplit(new)
                   self.chain.append(
-                      f"HTTP {code}: {old.hostname}{old.path[:100]} -> {new.hostname}{new.path[:100]}"
+                      f"HTTP {code}: {old.hostname}{old.path[:100]} "
+                      f"(query keys: {old_keys}) -> {new.hostname}{new.path[:100]} "
+                      f"(query keys: {new_keys}; exact URL unchanged: {same_url})"
                   )
                   return super().redirect_request(req, fp, code, msg, headers, newurl)
 
