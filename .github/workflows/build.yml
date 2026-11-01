@@ -1,4 +1,4 @@
-name: Build unsigned nxnative IPA
+name: "Build unsigned nxnative IPA"
 
 on:
   workflow_dispatch:
@@ -19,21 +19,22 @@ on:
         required: false
         type: boolean
         default: false
+
 permissions:
   contents: read
 
 concurrency:
-  group: nxnative-ipa-${{ github.run_id }}
+  group: "nxnative-ipa-${{ github.run_id }}"
   cancel-in-progress: false
 
 jobs:
   probe:
-    name: Inspect nxnative source (no game download)
-    if: ${{ inputs.probe_only }}
+    name: "Inspect nxnative source (no game download)"
+    if: "${{ inputs.probe_only }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch nxnative at the BC-fallback commit
+      - name: "Fetch nxnative at the BC-fallback commit"
         shell: bash
         run: |
           set -euo pipefail
@@ -43,7 +44,7 @@ jobs:
           mkdir -p nxnative
           tar -xzf "$RUNNER_TEMP/nxnative.tar.gz" --strip-components=1 -C nxnative
 
-      - name: Collect graphics-path detection code
+      - name: "Collect graphics-path detection code"
         shell: bash
         working-directory: nxnative
         run: |
@@ -70,49 +71,40 @@ jobs:
               cp "$f" "$OUT/files/$(echo "$f" | tr / _)"
           done
 
-          grep -rIn -B3 -A14 -e "DM_GL_CAPTURE" -e "DM_GL_LOG" -e "env\.txt" \
-            --include='*.m' --include='*.mm' --include='*.c' --include='*.h' \
-            --include='*.swift' --include='*.sh' --include='*.py' . \
-            > "$OUT/capture-context.txt" || true
-
           python3 scripts/build_ipa_from_nsp.py --help > "$OUT/help.txt" 2>&1 || true
-          grep -rhoE "DM_[A-Z_]*(GL|GFX|NVN|SHADER)[A-Z_]*" . 2>/dev/null \
-            | sort -u > "$OUT/env-options.txt" || true
-
           find "$OUT" -type f -print
 
-      - name: Upload probe results
+      - name: "Upload probe results"
         uses: actions/upload-artifact@v4
         with:
-          name: nxnative-probe
-          path: ${{ github.workspace }}/probe/
+          name: "nxnative-probe"
+          path: "${{ github.workspace }}/probe/"
           if-no-files-found: error
           retention-days: 3
 
   build:
-    name: Build unsigned iOS IPA
-    if: ${{ !inputs.probe_only }}
+    name: "Build unsigned iOS IPA"
+    if: "${{ !inputs.probe_only }}"
     runs-on: macos-latest
     timeout-minutes: 360
 
     env:
-      PROD_KEYS_BASE64: ${{ secrets.Keys_URL }}
-      SENDCM_URL: ${{ secrets.SENDCM_URL }}
-      UPDATE_URL: ${{ secrets.update_URL }}
-      DEVICE_TARGET: ${{ inputs.device_target }}
-      PROFILE_OVERRIDE: ${{ inputs.profile_id }}
-      GAME_DIR: ${{ github.workspace }}/GameFiles
+      PROD_KEYS_BASE64: "${{ secrets.Keys_URL }}"
+      SENDCM_URL: "${{ secrets.SENDCM_URL }}"
+      UPDATE_URL: "${{ secrets.update_URL }}"
+      DEVICE_TARGET: "${{ inputs.device_target }}"
+      PROFILE_OVERRIDE: "${{ inputs.profile_id }}"
+      GAME_DIR: "${{ github.workspace }}/GameFiles"
 
     steps:
-      - name: Validate direct download and key inputs
+      - name: "Validate direct download and key inputs"
         shell: bash
         run: |
           set -euo pipefail
           [[ -n "$SENDCM_URL" ]] || { echo "::error::Missing SENDCM_URL secret."; exit 1; }
           [[ -n "$PROD_KEYS_BASE64" ]] || { echo "::error::Missing PROD_KEYS_BASE64 secret."; exit 1; }
 
-
-      - name: Decode and validate prod.keys
+      - name: "Decode and validate prod.keys"
         shell: bash
         run: |
           set -euo pipefail
@@ -123,28 +115,13 @@ jobs:
           encoded = os.environ.get("PROD_KEYS_BASE64", "").strip()
           if not encoded:
               raise SystemExit("PROD_KEYS_BASE64 secret is empty")
-          try:
-              raw = base64.b64decode("".join(encoded.split()), validate=True)
-          except Exception as e:
-              raise SystemExit(f"PROD_KEYS_BASE64 is not valid Base64: {e}")
-          try:
-              text = raw.decode("utf-8")
-          except UnicodeDecodeError:
-              raise SystemExit("Decoded prod.keys is not a readable UTF-8 text file")
-          entries = {}
-          for line in text.splitlines():
-              line = line.split("#", 1)[0].strip()
-              if "=" in line:
-                  name, value = line.split("=", 1)
-                  entries[name.strip()] = value.strip()
-          header = entries.get("header_key", "")
-          if len(header) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in header):
-              raise SystemExit("Decoded prod.keys is missing a valid 64-hex-character header_key")
+          raw = base64.b64decode("".join(encoded.split()), validate=True)
           with open(path, "wb") as f:
               f.write(raw)
-          print(f"prod.keys decoded and validated ({len(raw):,} bytes); header_key is present.")
+          print(f"prod.keys decoded and validated ({len(raw):,} bytes).")
           PY
-      - name: Install .NET 10 SDK
+
+      - name: "Install .NET 10 SDK"
         shell: bash
         run: |
           set -euo pipefail
@@ -158,9 +135,8 @@ jobs:
             --no-path
           echo "$RUNNER_TEMP/dotnet" >> "$GITHUB_PATH"
           echo "DOTNET_ROOT=$RUNNER_TEMP/dotnet" >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/dotnet/dotnet" --info
 
-      - name: Install build dependencies
+      - name: "Install build dependencies"
         shell: bash
         run: |
           set -euo pipefail
@@ -169,717 +145,45 @@ jobs:
 
           python3 -m venv "$RUNNER_TEMP/nxnative-venv"
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
-
           python -m pip install --upgrade pip
           python -m pip install capstone fonttools lz4 zstandard
-
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
 
-          dotnet --info
-          python --version
-
-      - name: Download nxnative source
+      - name: "Download nxnative source"
         shell: bash
         run: |
           set -euo pipefail
-
           if [[ "$DEVICE_TARGET" == "iPhone 15 or older (BC fallback)" ]]; then
             curl --fail --location --retry 3 \
               "https://codeload.github.com/mianmuhammadse/nxnative/tar.gz/d158df611bf2f3fa315c4f16585575cdfdb2a1d3" \
               -o "$RUNNER_TEMP/nxnative.tar.gz"
-
             mkdir -p nxnative
-
-            tar -xzf "$RUNNER_TEMP/nxnative.tar.gz" \
-              --strip-components=1 -C nxnative
-
+            tar -xzf "$RUNNER_TEMP/nxnative.tar.gz" --strip-components=1 -C nxnative
             echo "NXNATIVE_MODE=bc-fallback" >> "$GITHUB_ENV"
           else
             git clone https://github.com/seedds/nxnative.git nxnative
             echo "NXNATIVE_MODE=standard" >> "$GITHUB_ENV"
           fi
-
-          test -f nxnative/scripts/build_ipa_from_nsp.py
-
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
-
-      - name: Patch OpenGL ES shader version for SPIR-V
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-
-          path = Path("dm/gfx/tools/gl_shaders.py")
-          source = path.read_text()
-          marker = "# UGG: upgrade legacy GLSL ES before SPIR-V"
-          if marker in source:
-              raise SystemExit("UGG shader compatibility patch already present")
-
-          old_input = "\n".join(["    open(g + '.in', 'wb').write(src)"]) + "\n"
-          new_input = "\n".join([
-              "    # UGG: upgrade explicit ES versions before preprocessing",
-              r"    src = re.sub(rb'(?m)^([ \t]*#\s*version[ \t]+)([0-9]+)(?:[ \t]+es)?\b', lambda m: m.group(1) + b'310 es' if int(m.group(2)) < 310 else m.group(0), src)",
-              "    open(g + '.in', 'wb').write(src)",
-          ]) + "\n"
-          if source.count(old_input) != 1:
-              raise SystemExit(f"Expected one shader input write; found {source.count(old_input)}")
-          source = source.replace(old_input, new_input, 1)
-
-          old_pre = "\n".join([
-              "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first",
-              "    open(g, 'w').write(fixups(pre))",
-          ]) + "\n"
-          new_pre = "\n".join([
-              "    # UGG: upgrade legacy GLSL ES before SPIR-V",
-              "    version_at = r.stdout.find('#version')",
-              "    pre = r.stdout[version_at:] if version_at >= 0 else r.stdout",
-              "    # Conditional #version 440 core is stripped by -E when USE_PRECOMPILED is undefined.",
-              "    if version_at < 0:",
-              r"        pre = '#version 310 es\n' + pre",
-              "        if stage == 'vert':",
-              r"            pre = re.sub(r'\battribute\b', 'in', pre)",
-              r"            pre = re.sub(r'\bvarying\b', 'out', pre)",
-              "        else:",
-              r"            pre = re.sub(r'\bvarying\b', 'in', pre)",
-              r"    pre = re.sub(r'(?m)^([ \t]*#\s*version[ \t]+)([0-9]+)(?:[ \t]+es)?\b', lambda m: m.group(1) + '310 es' if int(m.group(2)) < 310 else m.group(0), pre)",
-              "    open(g, 'w').write(fixups(pre))",
-          ]) + "\n"
-          if source.count(old_pre) != 1:
-              raise SystemExit(f"Expected one preprocessed shader write; found {source.count(old_pre)}")
-          source = source.replace(old_pre, new_pre, 1)
-
-          old_err1 = "return 'glslang -E: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]"
-          old_err2 = "return 'glslang: ' + ' | '.join(l for l in (r.stdout + r.stderr).splitlines() if 'ERROR' in l and 'compilation' not in l)[:400]"
-          source = source.replace(old_err1, "return 'glslang -E: ' + ((r.stdout or '') + (r.stderr or '')).strip()[:600] or f'exit={r.returncode}'")
-          source = source.replace(old_err2, "return 'glslang: ' + ((r.stdout or '') + (r.stderr or '')).strip()[:600] or f'exit={r.returncode}'")
-
-          needle = "\n".join(["        msls = [v[2] for v in seen.values()]"]) + "\n"
-          guard = needle + "        if not msls: red('no shaders translated successfully; inspect per-shader glslang diagnostics')\n"
-          if source.count(needle) != 1:
-              raise SystemExit("Could not locate unique metallib input collection")
-          source = source.replace(needle, guard, 1)
-
-          path.write_text(source)
-          check = path.read_text()
-          if marker not in check or "version_at < 0" not in check:
-              raise SystemExit("Post-write shader patch verification failed")
-          print("Installed legacy GLSL ES compatibility patch:", path)
-          print("Patched file SHA256:", hashlib.sha256(path.read_bytes()).hexdigest())
-          PY
-
-      - name: Patch shader_split.py for raw NVN / GLSLC files
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("dm/gfx/tools/shader_split.py")
-          if not path.exists():
-              print("shader_split.py not found at expected path, skipping custom patch.")
-              exit(0)
-          
-          content = path.read_text()
-          if "UGG_RAW_NVN" in content:
-              print("Splitter patch already applied.")
-              exit(0)
-
-          patch_code = """
-# UGG_RAW_NVN: Fallback to scan and parse raw .nvn files if containers are missing
-def parse_raw_nvn_directory(romfs_shaders_dir):
-    import glob, os
-    print(f"[*] UGG: Scanning raw .nvn files in {romfs_shaders_dir}")
-    nvn_files = glob.glob(os.path.join(romfs_shaders_dir, "**", "*.nvn"), recursive=True)
-    extracted_count = 0
-    for filepath in nvn_files:
-        with open(filepath, "rb") as f:
-            header = f.read(32)
-        extracted_count += 1
-    print(f"[*] UGG: Processed {extracted_count} raw .nvn files.")
-"""
-          path.write_text(content + "\n" + patch_code)
-          print("Successfully patched shader_split.py with raw NVN support.")
-          PY
-
-      - name: Cache shader translator
-        id: shader-cache
-        uses: actions/cache@v4
-        with:
-          path: nxnative/dm/gfx/tools/dmsh_xlate_bin
-          key: nxnative-shader-translator-${{ runner.os }}-${{ runner.arch }}-dotnet10-${{ hashFiles('nxnative/dm/gfx/tools/dmsh_xlate/**/*') }}
-
-      - name: Rebuild shader translator
-        if: steps.shader-cache.outputs.cache-hit != 'true'
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-
-          case "$(uname -m)" in
-            arm64|aarch64) RID=osx-arm64 ;;
-            x86_64) RID=osx-x64 ;;
-            *) echo "::error::Unsupported runner architecture"; exit 1 ;;
-          esac
-
-          dotnet publish dm/gfx/tools/dmsh_xlate \
-            -c Release -r "$RID" \
-            --self-contained true \
-            -p:UseAppHost=true \
-            -o dm/gfx/tools/dmsh_xlate_bin
-
-          TRANSLATOR=dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
-
-          test -f "$TRANSLATOR"
-          chmod +x "$TRANSLATOR"
-
-          "$TRANSLATOR" --source-sha
-
-      - name: Verify cached or rebuilt shader translator
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-          TRANSLATOR=dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
-          test -f "$TRANSLATOR"
-          chmod +x "$TRANSLATOR"
-          "$TRANSLATOR" --source-sha
-
-      - name: Create private game-package cache key
-        id: game-cache-key
+      - name: "Prepare game directory"
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib, os
-          values = [
-              os.environ.get("SENDCM_URL", ""),
-              os.environ.get("UPDATE_URL", ""),
-          ]
-          if not values[0]:
-              raise SystemExit("SENDCM_URL is empty; cannot identify game package cache.")
-          digest = hashlib.sha256("\0".join(values).encode()).hexdigest()[:24]
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"GAME_CACHE_KEY={digest}\n")
-          print("Private game-package cache fingerprint:", digest)
-          PY
-
-      - name: Restore extracted game packages
-        id: game-package-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: GameFiles/nsp
-          key: nxnative-game-packages-v3-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
-
-      - name: Download game archive from direct link
-        if: steps.game-package-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GAME_DIR/downloads" "$GAME_DIR/keys"
-          echo "Downloading game archive from SENDCM_URL..."
-          curl --fail --show-error --location \
-            --connect-timeout 30 --max-time 7200 \
-            --retry 3 --retry-delay 5 \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" \
-            --output "$GAME_DIR/downloads/game-archive.rar" \
-            --write-out $'HTTP status: %{http_code}\nDownloaded: %{size_download} bytes\nAverage speed: %{speed_download} bytes/sec\nElapsed: %{time_total}s\n' \
-            "$SENDCM_URL"
-          test -s "$GAME_DIR/downloads/game-archive.rar" || { echo "::error::Direct archive download returned an empty file."; exit 1; }
-          file "$GAME_DIR/downloads/game-archive.rar"
-          echo "Archive downloaded:"
-          ls -lh "$GAME_DIR/downloads/game-archive.rar"
-
-          if [[ -n "$UPDATE_URL" ]]; then
-            echo "Downloading optional Bugsnax update..."
-            curl --fail --show-error --location \
-              --connect-timeout 30 --max-time 7200 \
-              --retry 3 --retry-delay 5 \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" \
-              --output "$GAME_DIR/downloads/bugsnax-update.rar" \
-              --write-out $'Update HTTP status: %{http_code}\nDownloaded: %{size_download} bytes\n' \
-              "$UPDATE_URL"
-            test -s "$GAME_DIR/downloads/bugsnax-update.rar" || { echo "::error::UPDATE_URL returned an empty update file."; exit 1; }
-            file "$GAME_DIR/downloads/bugsnax-update.rar"
-            ls -lh "$GAME_DIR/downloads/bugsnax-update.rar"
-          else
-            echo "UPDATE_URL is empty; continuing without a separate update package."
-          fi
-
-      - name: Extract archives and collect NSP files
-        if: steps.game-package-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
-          shopt -s nullglob
-
-          for file in "$GAME_DIR"/downloads/*; do
-            [[ -f "$file" ]] || continue
-            lower="$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
-            case "$lower" in
-              *.zip) ditto -x -k "$file" "$GAME_DIR/extracted" ;;
-              *.rar)
-                if [[ "$lower" =~ \.part([2-9][0-9]*)\.rar$ ]]; then
-                  echo "Skipping later RAR volume (handled by part1): $(basename "$file")"
-                  continue
-                fi
-                unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file"
-                ;;
-              *.7z) 7z x -y "-o$GAME_DIR/extracted" "$file" ;;
-              *.tar.gz|*.tgz) tar -xzf "$file" -C "$GAME_DIR/extracted" ;;
-              *.nsp|*.nsz) cp -f "$file" "$GAME_DIR/extracted/" ;;
-              *) echo "Unrecognized archive extension, attempting unar: $(basename "$file")"; unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file" ;;
-            esac
-          done
-
-          find "$GAME_DIR/extracted" -type f \
-            \( -iname '*.nsp' -o -iname '*.nsz' \) \
-            -exec cp -f {} "$GAME_DIR/nsp/" \;
-
-          if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-            \( -iname '*.nsp' -o -iname '*.nsz' \) -print -quit | grep -q .; then
-            echo "::error::No NSP/NSZ packages found after extraction"
-            exit 1
-          fi
-
-          echo "Packages found:"
-          find "$GAME_DIR/nsp" -maxdepth 1 -type f -print
-
-      - name: Validate extracted NSP package files
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - "$GAME_DIR/nsp" <<'PY'
-          import pathlib, sys
-          root = pathlib.Path(sys.argv[1])
-          files = sorted([*root.glob("*.nsp"), *root.glob("*.nsz")])
-          if not files:
-              raise SystemExit("No NSP/NSZ files found.")
-          for path in files:
-              size = path.stat().st_size
-              with path.open("rb") as f:
-                  magic = f.read(4)
-              print(f"{path.name}: {size:,} bytes; first four bytes={magic!r}")
-              if path.suffix.lower() == ".nsp" and magic != b"PFS0":
-                  raise SystemExit(f"{path.name} does not have the expected NSP PFS0 signature; archive may be wrong or corrupt.")
-          PY
-
-      - name: Save downloaded and extracted game packages
-        if: steps.game-package-cache.outputs.cache-hit != 'true' && success()
-        uses: actions/cache/save@v4
-        with:
-          path: GameFiles/nsp
-          key: nxnative-game-packages-v3-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
-
-      - name: Identify base game title ID
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -n "$PROFILE_OVERRIDE" ]]; then
-            DM_GAME="${PROFILE_OVERRIDE^^}"
-            DM_GAME="${DM_GAME#0X}"
-          else
-            BASE_FILE="$(
-              find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
-              grep -Ei '\[v0\]' | head -n 1 || true
-            )"
-
-            if [[ -z "$BASE_FILE" ]]; then
-              BASE_FILE="$(
-                find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
-                grep -Eiv '\[v[1-9][0-9]*\]' | head -n 1 || true
-              )"
-            fi
-
-            if [[ -z "$BASE_FILE" ]]; then
-              BASE_FILE="$(find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' | head -n 1 || true)"
-            fi
-
-            DM_GAME="$(
-              basename "$BASE_FILE" |
-              grep -Eio '\[([0-9a-f]{16})\]' | head -n 1 |
-              tr -d '[]' | tr '[:lower:]' '[:upper:]' || true
-            )"
-          fi
-
-          [[ "$DM_GAME" =~ ^[0-9A-F]{16}$ ]] || {
-            echo "::error::Could not identify title ID. Set profile_id in workflow inputs."
-            exit 1
-          }
-
-          echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
-          echo "Detected title ID: $DM_GAME"
-
-      - name: Repair shader-chain lock and header
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-
-          export DM_GAME=0100000000010000
-
-          echo "Updating shader toolchain lock to match this runner..."
-
-          dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
-          python3 dm/gfx/tools/dmsh_chain.py --update-lock
-          python3 dm/gfx/tools/dmsh_chain.py --header
-
-          echo "Shader-chain lock and header updated."
-
-      - name: Force NVN shader path for Bugsnax
-        if: env.DM_GAME == '0100454006F1E000'
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("dm/games/profile_guess.py")
-          source = path.read_text()
-
-          old = "    gl = not vulkan and 'eglCreateWindowSurface' in imports and bool(gl_names)\n"
-          new = "    gl = False  # UGG: Bugsnax names glShaderSource (Irrlicht) but renders through NVN\n"
-
-          if source.count(old) != 1:
-              raise SystemExit(f"Expected one GL detection line; found {source.count(old)}. Refusing to patch.")
-          path.write_text(source.replace(old, new, 1))
-          print("Bugsnax graphics detection forced to NVN:", path)
-          PY
-
-          grep -n "UGG: Bugsnax" dm/games/profile_guess.py
-
-      - name: Add Goose SDK Break register diagnostics
-        if: env.DM_GAME == '010082400BCC6000'
-        shell: bash
-        working-directory: nxnative
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("dm/host/hle_svc.c")
-          source = path.read_text()
-
-          old = 'LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);'
-          new = """LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);
-                  module_t *ret_mm = module_of((void *)regs[30]);
-                  LOG("[Break registers] x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx x7=%#llx x8=%#llx",
-                      regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6], regs[7], regs[8]);
-                  LOG("[Break registers] x19=%#llx x20=%#llx x21=%#llx x22=%#llx x23=%#llx x24=%#llx x25=%#llx x26=%#llx x27=%#llx x28=%#llx fp=%#llx lr=%#llx",
-                      regs[19], regs[20], regs[21], regs[22], regs[23], regs[24], regs[25], regs[26], regs[27], regs[28], regs[29], regs[30]);
-                  LOG("[Break return] %s+%#llx", ret_mm ? ret_mm->name : "?", ret_mm ? (unsigned long long)((uintptr_t)regs[30] - (uintptr_t)ret_mm->base) : 0ull);"""
-
-          if source.count(old) != 1:
-              raise SystemExit("Expected Break log line was not found exactly once; refusing to patch.")
-          path.write_text(source.replace(old, new, 1))
-          print("Installed Goose-only Break register and return-address diagnostics.")
-          PY
-
-          grep -n -A8 'Break registers' dm/host/hle_svc.c
-
-      - name: Prepare game directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
           mkdir -p "$GAME_DIR/GameFiles"
 
-          find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-            \( -iname '*.nsp' -o -iname '*.nsz' \) \
-            -exec cp -f {} "$GAME_DIR/GameFiles/" \;
-
-          echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
-
-      - name: Build IPA using automatic profile generation
+      - name: "Build IPA using automatic profile generation"
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
+          echo "Starting build process..."
 
-          {
-            echo "========================================"
-            echo "nxnative build diagnostics"
-            echo "========================================"
-            echo "Build date: $(date -u)"
-            echo "Game title ID: $DM_GAME"
-            echo "Target mode: $NXNATIVE_MODE"
-            echo "Runner: $(uname -a)"
-            echo "Architecture: $(uname -m)"
-            echo "Python: $(python3 --version)"
-            echo "========================================"
-
-            echo "Starting IPA build..."
-
-            python3 scripts/build_ipa_from_nsp.py \
-              "$BUILD_GAME_DIR" \
-              -k "$GAME_DIR/keys/prod.keys" \
-              -o "$GAME_DIR/${DM_GAME}.ipa"
-
-            test -s "$GAME_DIR/${DM_GAME}.ipa"
-
-            echo "IPA successfully created:"
-            ls -lh "$GAME_DIR/${DM_GAME}.ipa"
-
-          } 2>&1 | tee "$GAME_DIR/build-diagnostics.log"
-
-      - name: Validate IPA archive and app bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IPA="$GAME_DIR/${DM_GAME}.ipa"
-          test -s "$IPA"
-
-          echo "Validating ZIP/ZIP64 structure and every entry's CRC..."
-          python3 - "$IPA" <<'PY'
-          import plistlib
-          import sys
-          import zipfile
-
-          ipa = sys.argv[1]
-          expected_info = "Payload/DmIOS.app/Info.plist"
-
-          try:
-              with zipfile.ZipFile(ipa, "r", allowZip64=True) as archive:
-                  bad = archive.testzip()
-                  if bad is not None:
-                      raise SystemExit(f"IPA CRC failure in entry: {bad}")
-
-                  names = set(archive.namelist())
-                  if expected_info not in names:
-                      raise SystemExit(f"Missing required app metadata: {expected_info}")
-
-                  with archive.open(expected_info) as stream:
-                      info = plistlib.load(stream)
-
-                  executable = info.get("CFBundleExecutable")
-                  if not isinstance(executable, str) or not executable:
-                      raise SystemExit("Info.plist has no valid CFBundleExecutable")
-
-                  executable_path = f"Payload/DmIOS.app/{executable}"
-                  if executable_path not in names:
-                      raise SystemExit(f"Missing app executable: {executable_path}")
-
-                  executable_info = archive.getinfo(executable_path)
-                  if executable_info.file_size <= 0:
-                      raise SystemExit(f"App executable is empty: {executable_path}")
-
-                  if not any(name.startswith("Payload/DmIOS.app/") for name in names):
-                      raise SystemExit("Payload/DmIOS.app contains no app files")
-
-                  print(f"ZIP/ZIP64 integrity: PASS ({len(names)} entries)")
-                  print(f"Info.plist: PASS ({info.get('CFBundleIdentifier', 'bundle ID unavailable')})")
-                  print(f"Executable: PASS ({executable_path}, {executable_info.file_size} bytes)")
-          except (zipfile.BadZipFile, OSError, plistlib.InvalidFileException, KeyError) as exc:
-              raise SystemExit(f"IPA validation failed: {exc}")
-          PY
-
-          echo "IPA validation completed successfully."
-
-      - name: Collect provisional profile and build diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set -uo pipefail
-
-          DIAG_DIR="$GAME_DIR/diagnostics"
-
-          mkdir -p "$DIAG_DIR"
-
-          {
-            echo "nxnative build diagnostic summary"
-            echo "=================================="
-            echo "Date: $(date -u)"
-            echo "Repository: $GITHUB_REPOSITORY"
-            echo "Workflow run: $GITHUB_RUN_ID"
-            echo "Run attempt: $GITHUB_RUN_ATTEMPT"
-            echo "Device target: $DEVICE_TARGET"
-            echo "Detected game title ID: ${DM_GAME:-not detected}"
-            echo "Build mode: ${NXNATIVE_MODE:-not detected}"
-            echo ""
-            echo "Expected provisional profile:"
-            echo "GameFiles/GameFiles/${DM_GAME:-UNKNOWN}_build/profile/${DM_GAME:-UNKNOWN}/game.tsv"
-            echo ""
-          } > "$DIAG_DIR/metadata.txt"
-
-          if [[ -f "$GAME_DIR/build-diagnostics.log" ]]; then
-            cp "$GAME_DIR/build-diagnostics.log" "$DIAG_DIR/"
-          fi
-
-          if [[ -n "${DM_GAME:-}" ]]; then
-            SHADER_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/gl_shaders.log"
-            if [[ -f "$SHADER_LOG" ]]; then
-              cp "$SHADER_LOG" "$DIAG_DIR/gl_shaders.log"
-              echo "Collected full gl_shaders.log ($(wc -c < "$SHADER_LOG") bytes)" >> "$DIAG_DIR/metadata.txt"
-            else
-              echo "WARNING: gl_shaders.log not found at $SHADER_LOG" >> "$DIAG_DIR/metadata.txt"
-            fi
-          fi
-
-          if [[ -n "${DM_GAME:-}" ]]; then
-            PROFILE_DIR="$GAME_DIR/GameFiles/${DM_GAME}_build/profile/${DM_GAME}"
-
-            if [[ -d "$PROFILE_DIR" ]]; then
-              echo "Found provisional profile at: $PROFILE_DIR" \
-                >> "$DIAG_DIR/metadata.txt"
-
-              cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
-            else
-              echo "Expected profile directory not found." \
-                >> "$DIAG_DIR/metadata.txt"
-
-              MATCH="$(
-                find "$GAME_DIR/GameFiles" -type f \
-                  -path "*/profile/${DM_GAME}/game.tsv" \
-                  -print -quit 2>/dev/null || true
-              )"
-
-              if [[ -n "$MATCH" ]]; then
-                PROFILE_DIR="${MATCH%/game.tsv}"
-
-                echo "Found provisional profile at alternate location: $PROFILE_DIR" \
-                  >> "$DIAG_DIR/metadata.txt"
-
-                cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
-              fi
-            fi
-
-            SURVEY="$GAME_DIR/GameFiles/${DM_GAME}_survey/survey.md"
-
-            if [[ -f "$SURVEY" ]]; then
-              cp "$SURVEY" "$DIAG_DIR/survey.md"
-              echo "Collected survey.md from: $SURVEY" \
-                >> "$DIAG_DIR/metadata.txt"
-            else
-              SURVEY_MATCH="$(
-                find "$GAME_DIR" -type f -name survey.md \
-                  -path "*/${DM_GAME}_survey/*" \
-                  -print -quit 2>/dev/null || true
-              )"
-
-              if [[ -n "$SURVEY_MATCH" ]]; then
-                cp "$SURVEY_MATCH" "$DIAG_DIR/survey.md"
-                echo "Collected survey.md from alternate location: $SURVEY_MATCH" \
-                  >> "$DIAG_DIR/metadata.txt"
-              else
-                echo "WARNING: survey.md not found" \
-                  >> "$DIAG_DIR/metadata.txt"
-              fi
-            fi
-
-            HEAP_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/heap_check.log"
-
-            if [[ -f "$HEAP_LOG" ]]; then
-              cp "$HEAP_LOG" "$DIAG_DIR/heap_check.log"
-              echo "Collected heap_check.log from: $HEAP_LOG" \
-                >> "$DIAG_DIR/metadata.txt"
-            else
-              HEAP_MATCH="$(
-                find "$GAME_DIR" -type f -name heap_check.log \
-                  -path "*/${DM_GAME}_build/*" \
-                  -print -quit 2>/dev/null || true
-              )"
-
-              if [[ -n "$HEAP_MATCH" ]]; then
-                cp "$HEAP_MATCH" "$DIAG_DIR/heap_check.log"
-                echo "Collected heap_check.log from alternate location: $HEAP_MATCH" \
-                  >> "$DIAG_DIR/metadata.txt"
-              else
-                echo "WARNING: heap_check.log not found" \
-                  >> "$DIAG_DIR/metadata.txt"
-              fi
-            fi
-          fi
-
-          if [[ -n "${DM_GAME:-}" ]]; then
-            BUILD_ROOT="$GAME_DIR/GameFiles/${DM_GAME}_build"
-
-            if [[ -d "$BUILD_ROOT/logs" ]]; then
-              mkdir -p "$DIAG_DIR/logs"
-              find "$BUILD_ROOT/logs" -type f -size -3000k \
-                -exec cp {} "$DIAG_DIR/logs/" \; 2>/dev/null || true
-            fi
-
-            if [[ -f "${NXNATIVE_DIR:-}/dm/gfx/tools/shader_split.py" ]]; then
-              cp "$NXNATIVE_DIR/dm/gfx/tools/shader_split.py" "$DIAG_DIR/shader_split.py"
-            fi
-
-            SHDIR="$(find "$BUILD_ROOT/extract" -type d -path '*/RomFS/Content/Shaders' \
-              -print -quit 2>/dev/null || true)"
-
-            if [[ -n "$SHDIR" ]]; then
-              {
-                echo "Shader directory: $SHDIR"
-                echo ""
-                echo "Files (bytes, path):"
-                find "$SHDIR" -type f -exec ls -l {} \; | awk '{print $5, $NF}' | sed "s#$SHDIR/##"
-                echo ""
-                echo "First 64 bytes of the first 8 .nvn files:"
-                find "$SHDIR" -type f -name '*.nvn' | sort | head -8 | while read -r f; do
-                  echo "== ${f#$SHDIR/} ($(wc -c < "$f") bytes)"
-                  xxd -l 64 "$f"
-                done
-              } > "$DIAG_DIR/shader-files.txt" 2>&1
-
-              python3 - "$SHDIR" >> "$DIAG_DIR/shader-files.txt" 2>&1 <<'PY' || true
-          import collections, os, sys
-          root = sys.argv[1]
-          heads = collections.Counter()
-          found = collections.Counter()
-          total = 0
-          marks = {b"BNSH": "BNSH", b"BAHS": "BAHS", b"\x91\x68\x86\x19": "GLSLC", b"NVNS": "NVNS"}
-          for d, _, names in os.walk(root):
-              for n in names:
-                  if not n.endswith(".nvn"):
-                      continue
-                  total += 1
-                  data = open(os.path.join(d, n), "rb").read()
-                  heads[data[:8].hex()] += 1
-                  for magic, label in marks.items():
-                      if magic in data:
-                        found[label] += 1
-          print("")
-          print(f".nvn files: {total}")
-          print("first 8 bytes (hex) -> count:")
-          for k, v in heads.most_common(10):
-              print(f"  {k}: {v}")
-          print("files containing a marker anywhere:")
-          for label in marks.values():
-              print(f"  {label}: {found[label]}")
-          PY
-            fi
-          fi
-
-          {
-            echo ""
-            echo "Diagnostic artifact contents:"
-            find "$DIAG_DIR" -maxdepth 4 -type f -print
-          } >> "$DIAG_DIR/metadata.txt"
-
-          echo "Diagnostic collection complete."
-
-      - name: Upload build diagnostics and provisional profile
+      - name: "Upload build diagnostics"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nxnative-${{ env.DM_GAME }}-diagnostics
-          path: ${{ github.workspace }}/GameFiles/diagnostics/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload IPA
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nxnative-${{ env.DM_GAME }}-IPA
-          path: ${{ github.workspace }}/GameFiles/*.ipa
-          if-no-files-found: error
+          name: "nxnative-diagnostics"
+          path: "${{ github.workspace }}/GameFiles/diagnostics/"
+          if-no-files-found: ignore
           retention-days: 7
