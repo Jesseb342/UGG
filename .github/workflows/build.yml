@@ -155,6 +155,7 @@ jobs:
 
           old = "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n    open(g + '.in', 'wb').write(src)\n"
           replacement = (
+              "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n"
               "    " + marker + "\n"
               "    def _promote_es_version(match):\n"
               "        version = int(match.group(2))\n"
