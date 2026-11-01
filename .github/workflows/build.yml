@@ -157,13 +157,16 @@ jobs:
           replacement = (
               "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n"
               "    " + marker + "\n"
+              "    def _version_lines(data):\n"
+              "        return re.findall(rb'(?i)#\\s*version[^\\r\\n\\x00]*', data)[:8]\n"
+              "    print(f'[UGG GLSL INPUT] {key} {stage}: bytes={len(src)} versions={_version_lines(src)!r} prefix={src[:100]!r}', flush=True)\n"
               "    def _promote_es_bytes(match):\n"
               "        version = int(match.group(2))\n"
               "        if version < 310:\n"
               "            print(f'[UGG GLSL SOURCE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\n"
               "            return match.group(1) + b'310 es'\n"
               "        return match.group(0)\n"
-              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_bytes, src)\n"
+              "    # Diagnostic-only run: preserve original shader bytes; do not rewrite versions.\n"
               "    open(g + '.in', 'wb').write(src)\n"
           )
           if source.count(old) != 1:
@@ -176,7 +179,9 @@ jobs:
           pre_marker = "# UGG: normalize preprocessed GLSL version before SPIR-V"
           pre_old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n    open(g, 'w').write(fixups(pre))\n"
           pre_new = (
+              "    print(f'[UGG GLSL PREPROCESS] {key} {stage}: rc={r.returncode} versions={_version_lines(r.stdout.encode())!r} prefix={r.stdout[:160]!r}', flush=True)\n"
               "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n"
+              "    print(f'[UGG GLSL PRE SELECTED] {key} {stage}: prefix={pre[:160]!r}', flush=True)\n"
               "    # UGG: normalize preprocessed GLSL version before SPIR-V\n"
               "    def _promote_es_pre(match):\n"
               "        version = int(match.group(2))\n"
@@ -531,6 +536,16 @@ jobs:
 
           if [[ -f "$GAME_DIR/build-diagnostics.log" ]]; then
             cp "$GAME_DIR/build-diagnostics.log" "$DIAG_DIR/"
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            SHADER_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/gl_shaders.log"
+            if [[ -f "$SHADER_LOG" ]]; then
+              cp "$SHADER_LOG" "$DIAG_DIR/gl_shaders.log"
+              echo "Collected full gl_shaders.log ($(wc -c < "$SHADER_LOG") bytes)" >> "$DIAG_DIR/metadata.txt"
+            else
+              echo "WARNING: gl_shaders.log not found at $SHADER_LOG" >> "$DIAG_DIR/metadata.txt"
+            fi
           fi
 
           if [[ -n "${DM_GAME:-}" ]]; then
