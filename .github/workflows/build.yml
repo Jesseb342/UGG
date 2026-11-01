@@ -262,12 +262,14 @@ jobs:
           print("Private game-package cache fingerprint:", digest)
           PY
 
-      - name: Cache extracted game packages
+      - name: Restore extracted game packages
         id: game-package-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          path: GameFiles/nsp
-          key: nxnative-game-packages-v1-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
+          path: |
+            GameFiles/downloads
+            GameFiles/nsp
+          key: nxnative-game-packages-v2-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
 
       - name: Download game archive from direct link
         if: steps.game-package-cache.outputs.cache-hit != 'true'
@@ -364,6 +366,15 @@ jobs:
               if path.suffix.lower() == ".nsp" and magic != b"PFS0":
                   raise SystemExit(f"{path.name} does not have the expected NSP PFS0 signature; archive may be wrong or corrupt.")
           PY
+
+      - name: Save downloaded and extracted game packages
+        if: steps.game-package-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            GameFiles/downloads
+            GameFiles/nsp
+          key: nxnative-game-packages-v2-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
 
       - name: Identify base game title ID
         shell: bash
