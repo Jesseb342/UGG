@@ -189,7 +189,7 @@ jobs:
               "            print(f'[UGG GLSL PRE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\n"
               "            return match.group(1) + '310 es'\n"
               "        return match.group(0)\n"
-              "    pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_pre, pre)\n"
+              "    # Diagnostic-only run: preserve preprocessed GLSL; do not rewrite versions.\\n"
               "    open(g, 'w').write(fixups(pre))\n"
           )
           if source.count(pre_old) != 1:
