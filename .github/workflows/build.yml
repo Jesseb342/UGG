@@ -265,7 +265,7 @@ jobs:
           key: nxnative-game-nsp-${{ runner.os }}-${{ steps.game-cache-key.outputs.key }}
 
       - name: Download game archive from direct link
-        if: steps.game-package-cache.outputs.cache-hit != 'true'
+        if: steps.game-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -300,7 +300,7 @@ jobs:
           fi
 
       - name: Extract archives and collect NSP files
-        if: steps.game-package-cache.outputs.cache-hit != 'true'
+        if: steps.game-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
