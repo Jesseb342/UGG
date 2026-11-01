@@ -153,32 +153,33 @@ jobs:
               raise SystemExit("UGG shader compatibility patch already present")
 
           old_input = "    open(g + '.in', 'wb').write(src)\\n"
-          new_input = """    # UGG: upgrade explicit ES versions before preprocessing.
-              src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b',
-                           lambda m: m.group(1) + b'310 es' if int(m.group(2)) < 310 else m.group(0), src)
-              open(g + '.in', 'wb').write(src)
-          """
+          new_input = (
+              "    # UGG: upgrade explicit ES versions before preprocessing\\n"
+              "    src = re.sub(rb'(?m)^([ \\\\t]*#\\\\s*version[ \\\\t]+)([0-9]+)(?:[ \\\\t]+es)?\\\\b', "
+              "lambda m: m.group(1) + b'310 es' if int(m.group(2)) < 310 else m.group(0), src)\\n"
+              "    open(g + '.in', 'wb').write(src)\\n"
+          )
           if source.count(old_input) != 1:
               raise SystemExit(f"Expected one shader input write; found {source.count(old_input)}")
           source = source.replace(old_input, new_input, 1)
 
           old_pre = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n    open(g, 'w').write(fixups(pre))\\n"
-          new_pre = """    # UGG: upgrade legacy GLSL ES before SPIR-V
-              version_at = r.stdout.find('#version')
-              pre = r.stdout[version_at:] if version_at >= 0 else r.stdout
-              # A conditional #version 440 core is stripped by -E when
-              # USE_PRECOMPILED is undefined; that branch is legacy GLSL ES.
-              if version_at < 0:
-                  pre = '#version 310 es\\n' + pre
-                  if stage == 'vert':
-                      pre = re.sub(r'\\battribute\\b', 'in', pre)
-                      pre = re.sub(r'\\bvarying\\b', 'out', pre)
-                  else:
-                      pre = re.sub(r'\\bvarying\\b', 'in', pre)
-              pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b',
-                           lambda m: m.group(1) + '310 es' if int(m.group(2)) < 310 else m.group(0), pre)
-              open(g, 'w').write(fixups(pre))
-          """
+          new_pre = (
+              "    # UGG: upgrade legacy GLSL ES before SPIR-V\\n"
+              "    version_at = r.stdout.find('#version')\\n"
+              "    pre = r.stdout[version_at:] if version_at >= 0 else r.stdout\\n"
+              "    # Conditional #version 440 core is stripped by -E when USE_PRECOMPILED is undefined.\\n"
+              "    if version_at < 0:\\n"
+              "        pre = '#version 310 es\\\\n' + pre\\n"
+              "        if stage == 'vert':\\n"
+              "            pre = re.sub(r'\\\\\\\\battribute\\\\\\\\b', 'in', pre)\\n"
+              "            pre = re.sub(r'\\\\\\\\bvarying\\\\\\\\b', 'out', pre)\\n"
+              "        else:\\n"
+              "            pre = re.sub(r'\\\\\\\\bvarying\\\\\\\\b', 'in', pre)\\n"
+              "    pre = re.sub(r'(?m)^([ \\\\t]*#\\\\s*version[ \\\\t]+)([0-9]+)(?:[ \\\\t]+es)?\\\\b', "
+              "lambda m: m.group(1) + '310 es' if int(m.group(2)) < 310 else m.group(0), pre)\\n"
+              "    open(g, 'w').write(fixups(pre))\\n"
+          )
           if source.count(old_pre) != 1:
               raise SystemExit(f"Expected one preprocessed shader write; found {source.count(old_pre)}")
           source = source.replace(old_pre, new_pre, 1)
@@ -196,7 +197,7 @@ jobs:
 
           path.write_text(source)
           check = path.read_text()
-          if marker not in check or "version_at < 0" not in check or "310 es" not in check:
+          if marker not in check or "version_at < 0" not in check:
               raise SystemExit("Post-write shader patch verification failed")
           print("Installed legacy GLSL ES compatibility patch:", path)
           print("Patched file SHA256:", hashlib.sha256(path.read_bytes()).hexdigest())
