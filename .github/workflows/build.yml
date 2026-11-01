@@ -1,4 +1,3 @@
-
 name: Build unsigned nxnative IPA
 
 on:
@@ -15,6 +14,11 @@ on:
         description: "Optional base-game title ID override, e.g. 0100B99019412000"
         required: false
         type: string
+      probe_only:
+        description: "Only inspect nxnative source (fast, no game build)"
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 
@@ -23,8 +27,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  probe:
+    name: Inspect nxnative source (no game download)
+    if: ${{ inputs.probe_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch nxnative at the BC-fallback commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "https://codeload.github.com/mianmuhammadse/nxnative/tar.gz/d158df611bf2f3fa315c4f16585575cdfdb2a1d3" \
+            -o "$RUNNER_TEMP/nxnative.tar.gz"
+          mkdir -p nxnative
+          tar -xzf "$RUNNER_TEMP/nxnative.tar.gz" --strip-components=1 -C nxnative
+
+      - name: Collect graphics-path detection code
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -uo pipefail
+          OUT="$GITHUB_WORKSPACE/probe"
+          mkdir -p "$OUT/files"
+
+          grep -rIl -e "glShaderSource" -e "gl_shaders" -e "NVN shader steps" \
+            --include='*.py' --include='*.sh' . | sort > "$OUT/matching-files.txt"
+
+          grep -rIn -e "glShaderSource" -e "gl_shaders.py" \
+            -e "renders with OpenGL" -e "NVN shader steps" \
+            --include='*.py' --include='*.sh' . > "$OUT/matches.txt" || true
+
+          while read -r f; do
+            [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 400000 ] && \
+              cp "$f" "$OUT/files/$(echo "${f#./}" | tr / _)"
+          done < "$OUT/matching-files.txt"
+
+          cp scripts/build_ipa_from_nsp.py "$OUT/files/scripts_build_ipa_from_nsp.py" || true
+
+          python3 scripts/build_ipa_from_nsp.py --help > "$OUT/help.txt" 2>&1 || true
+          grep -rhoE "DM_[A-Z_]*(GL|GFX|NVN|SHADER)[A-Z_]*" . 2>/dev/null \
+            | sort -u > "$OUT/env-options.txt" || true
+
+          find "$OUT" -type f -print
+
+      - name: Upload probe results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-probe
+          path: ${{ github.workspace }}/probe/
+          if-no-files-found: error
+          retention-days: 3
+
   build:
     name: Build unsigned iOS IPA
+    if: ${{ !inputs.probe_only }}
     runs-on: macos-latest
     timeout-minutes: 360
 
