@@ -145,35 +145,38 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
+          import re
 
           path = Path("dm/gfx/tools/gl_shaders.py")
           source = path.read_text()
-          marker = "# UGG: promote GLSL ES 300 before glslang preprocessing"
+          marker = "# UGG: promote GLSL ES versions below 310 before glslang preprocessing"
           if marker in source:
               raise SystemExit("UGG shader patch is already present in downloaded nxnative source")
+
           old = "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n    open(g + '.in', 'wb').write(src)\n"
-          new = old.replace(
-              "    open(g + '.in', 'wb').write(src)\n",
+          replacement = (
               "    " + marker + "\n"
-              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)300([ \\t]+es\\b)', rb'\\\\g<1>310\\\\g<2>', src, count=1)\n"
-              "    if re.search(rb'(?m)^#\\s*version[ \\t]+300[ \\t]+es\\b', src):\n"
-              "        raise RuntimeError(f'GLSL ES 300 remains before preprocessing: {key}')\n"
+              "    def _promote_es_version(match):\n"
+              "        version = int(match.group(2))\n"
+              "        if version < 310:\n"
+              "            print(f'[UGG GLSL VERSION] {key} {stage}: ES {version} -> 310', flush=True)\n"
+              "            return match.group(1) + b'310' + match.group(3)\n"
+              "        return match.group(0)\n"
+              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)([ \\t]+es\\b)', _promote_es_version, src)\n"
               "    open(g + '.in', 'wb').write(src)\n"
           )
-          if old not in source:
-              raise SystemExit("Could not find the exact translate() input-write site; refusing to patch")
-          if new == old:
-              raise SystemExit("Failed to construct the source-level GLSL patch")
-          source = source.replace(old, new, 1)
+          if source.count(old) != 1:
+              raise SystemExit(f"Expected one translate() input-write site; found {source.count(old)}")
+          source = source.replace(old, replacement, 1)
           path.write_text(source)
           check = path.read_text()
-          if marker not in check or "GLSL ES 300 remains before preprocessing" not in check:
+          if marker not in check or "_promote_es_version" not in check:
               raise SystemExit("Post-write verification failed")
-          print("Verified source-level GLSL ES 300→310 patch:", path)
+          print("Verified callback-based GLSL ES version patch:", path)
           print("Patched file SHA256:", hashlib.sha256(path.read_bytes()).hexdigest())
           PY
 
-          grep -n -A6 -B2 'UGG: promote GLSL ES 300' dm/gfx/tools/gl_shaders.py
+          grep -n -A10 -B2 'UGG: promote GLSL ES versions' dm/gfx/tools/gl_shaders.py
 
       - name: Cache shader translator
         id: shader-cache
