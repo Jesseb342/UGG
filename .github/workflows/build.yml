@@ -421,7 +421,7 @@ def parse_raw_nvn_directory(romfs_shaders_dir):
 
           for file in "$GAME_DIR"/downloads/*; do
             [[ -f "$file" ]] || continue
-            lower="$(printf '\%s' "$file" | tr '[:upper:]' '[:lower:]')"
+            lower="$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
             case "$lower" in
               *.zip) ditto -x -k "$file" "$GAME_DIR/extracted" ;;
               *.rar)
@@ -439,11 +439,11 @@ def parse_raw_nvn_directory(romfs_shaders_dir):
           done
 
           find "$GAME_DIR/extracted" -type f \
-            \(-iname '*.nsp' -o -iname '*.nsz'\) \
+            \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
 
           if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-            \(-iname '*.nsp' -o -iname '*.nsz'\) -print -quit | grep -q .; then
+            \( -iname '*.nsp' -o -iname '*.nsz' \) -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found after extraction"
             exit 1
           fi
@@ -488,7 +488,7 @@ def parse_raw_nvn_directory(romfs_shaders_dir):
           else
             BASE_FILE="$(
               find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' |
-              grep -Ei '[v0]' | head -n 1 || true
+              grep -Ei '\[v0\]' | head -n 1 || true
             )"
 
             if [[ -z "$BASE_FILE" ]]; then
@@ -573,4 +573,315 @@ def parse_raw_nvn_directory(romfs_shaders_dir):
           old = 'LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);'
           new = """LOG("Break#%d reason=%#llx Result=%#x svc at %s+%#llx", ++nb, regs[0], res, mm ? mm->name : "?", orig_addr);
                   module_t *ret_mm = module_of((void *)regs[30]);
-                  LOG("[Break registers] x0=%#llx x1=%#llx x2=%#llx x3
+                  LOG("[Break registers] x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x6=%#llx x7=%#llx x8=%#llx",
+                      regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6], regs[7], regs[8]);
+                  LOG("[Break registers] x19=%#llx x20=%#llx x21=%#llx x22=%#llx x23=%#llx x24=%#llx x25=%#llx x26=%#llx x27=%#llx x28=%#llx fp=%#llx lr=%#llx",
+                      regs[19], regs[20], regs[21], regs[22], regs[23], regs[24], regs[25], regs[26], regs[27], regs[28], regs[29], regs[30]);
+                  LOG("[Break return] %s+%#llx", ret_mm ? ret_mm->name : "?", ret_mm ? (unsigned long long)((uintptr_t)regs[30] - (uintptr_t)ret_mm->base) : 0ull);"""
+
+          if source.count(old) != 1:
+              raise SystemExit("Expected Break log line was not found exactly once; refusing to patch.")
+          path.write_text(source.replace(old, new, 1))
+          print("Installed Goose-only Break register and return-address diagnostics.")
+          PY
+
+          grep -n -A8 'Break registers' dm/host/hle_svc.c
+
+      - name: Prepare game directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GAME_DIR/GameFiles"
+
+          find "$GAME_DIR/nsp" -maxdepth 1 -type f \
+            \( -iname '*.nsp' -o -iname '*.nsz' \) \
+            -exec cp -f {} "$GAME_DIR/GameFiles/" \;
+
+          echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
+
+      - name: Build IPA using automatic profile generation
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          {
+            echo "========================================"
+            echo "nxnative build diagnostics"
+            echo "========================================"
+            echo "Build date: $(date -u)"
+            echo "Game title ID: $DM_GAME"
+            echo "Target mode: $NXNATIVE_MODE"
+            echo "Runner: $(uname -a)"
+            echo "Architecture: $(uname -m)"
+            echo "Python: $(python3 --version)"
+            echo "========================================"
+
+            echo "Starting IPA build..."
+
+            python3 scripts/build_ipa_from_nsp.py \
+              "$BUILD_GAME_DIR" \
+              -k "$GAME_DIR/keys/prod.keys" \
+              -o "$GAME_DIR/${DM_GAME}.ipa"
+
+            test -s "$GAME_DIR/${DM_GAME}.ipa"
+
+            echo "IPA successfully created:"
+            ls -lh "$GAME_DIR/${DM_GAME}.ipa"
+
+          } 2>&1 | tee "$GAME_DIR/build-diagnostics.log"
+
+      - name: Validate IPA archive and app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="$GAME_DIR/${DM_GAME}.ipa"
+          test -s "$IPA"
+
+          echo "Validating ZIP/ZIP64 structure and every entry's CRC..."
+          python3 - "$IPA" <<'PY'
+          import plistlib
+          import sys
+          import zipfile
+
+          ipa = sys.argv[1]
+          expected_info = "Payload/DmIOS.app/Info.plist"
+
+          try:
+              with zipfile.ZipFile(ipa, "r", allowZip64=True) as archive:
+                  bad = archive.testzip()
+                  if bad is not None:
+                      raise SystemExit(f"IPA CRC failure in entry: {bad}")
+
+                  names = set(archive.namelist())
+                  if expected_info not in names:
+                      raise SystemExit(f"Missing required app metadata: {expected_info}")
+
+                  with archive.open(expected_info) as stream:
+                      info = plistlib.load(stream)
+
+                  executable = info.get("CFBundleExecutable")
+                  if not isinstance(executable, str) or not executable:
+                      raise SystemExit("Info.plist has no valid CFBundleExecutable")
+
+                  executable_path = f"Payload/DmIOS.app/{executable}"
+                  if executable_path not in names:
+                      raise SystemExit(f"Missing app executable: {executable_path}")
+
+                  executable_info = archive.getinfo(executable_path)
+                  if executable_info.file_size <= 0:
+                      raise SystemExit(f"App executable is empty: {executable_path}")
+
+                  if not any(name.startswith("Payload/DmIOS.app/") for name in names):
+                      raise SystemExit("Payload/DmIOS.app contains no app files")
+
+                  print(f"ZIP/ZIP64 integrity: PASS ({len(names)} entries)")
+                  print(f"Info.plist: PASS ({info.get('CFBundleIdentifier', 'bundle ID unavailable')})")
+                  print(f"Executable: PASS ({executable_path}, {executable_info.file_size} bytes)")
+          except (zipfile.BadZipFile, OSError, plistlib.InvalidFileException, KeyError) as exc:
+              raise SystemExit(f"IPA validation failed: {exc}")
+          PY
+
+          echo "IPA validation completed successfully."
+
+      - name: Collect provisional profile and build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          DIAG_DIR="$GAME_DIR/diagnostics"
+
+          mkdir -p "$DIAG_DIR"
+
+          {
+            echo "nxnative build diagnostic summary"
+            echo "=================================="
+            echo "Date: $(date -u)"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow run: $GITHUB_RUN_ID"
+            echo "Run attempt: $GITHUB_RUN_ATTEMPT"
+            echo "Device target: $DEVICE_TARGET"
+            echo "Detected game title ID: ${DM_GAME:-not detected}"
+            echo "Build mode: ${NXNATIVE_MODE:-not detected}"
+            echo ""
+            echo "Expected provisional profile:"
+            echo "GameFiles/GameFiles/${DM_GAME:-UNKNOWN}_build/profile/${DM_GAME:-UNKNOWN}/game.tsv"
+            echo ""
+          } > "$DIAG_DIR/metadata.txt"
+
+          if [[ -f "$GAME_DIR/build-diagnostics.log" ]]; then
+            cp "$GAME_DIR/build-diagnostics.log" "$DIAG_DIR/"
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            SHADER_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/gl_shaders.log"
+            if [[ -f "$SHADER_LOG" ]]; then
+              cp "$SHADER_LOG" "$DIAG_DIR/gl_shaders.log"
+              echo "Collected full gl_shaders.log ($(wc -c < "$SHADER_LOG") bytes)" >> "$DIAG_DIR/metadata.txt"
+            else
+              echo "WARNING: gl_shaders.log not found at $SHADER_LOG" >> "$DIAG_DIR/metadata.txt"
+            fi
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            PROFILE_DIR="$GAME_DIR/GameFiles/${DM_GAME}_build/profile/${DM_GAME}"
+
+            if [[ -d "$PROFILE_DIR" ]]; then
+              echo "Found provisional profile at: $PROFILE_DIR" \
+                >> "$DIAG_DIR/metadata.txt"
+
+              cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+            else
+              echo "Expected profile directory not found." \
+                >> "$DIAG_DIR/metadata.txt"
+
+              MATCH="$(
+                find "$GAME_DIR/GameFiles" -type f \
+                  -path "*/profile/${DM_GAME}/game.tsv" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$MATCH" ]]; then
+                PROFILE_DIR="${MATCH%/game.tsv}"
+
+                echo "Found provisional profile at alternate location: $PROFILE_DIR" \
+                  >> "$DIAG_DIR/metadata.txt"
+
+                cp -R "$PROFILE_DIR" "$DIAG_DIR/provisional-profile"
+              fi
+            fi
+
+            SURVEY="$GAME_DIR/GameFiles/${DM_GAME}_survey/survey.md"
+
+            if [[ -f "$SURVEY" ]]; then
+              cp "$SURVEY" "$DIAG_DIR/survey.md"
+              echo "Collected survey.md from: $SURVEY" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              SURVEY_MATCH="$(
+                find "$GAME_DIR" -type f -name survey.md \
+                  -path "*/${DM_GAME}_survey/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$SURVEY_MATCH" ]]; then
+                cp "$SURVEY_MATCH" "$DIAG_DIR/survey.md"
+                echo "Collected survey.md from alternate location: $SURVEY_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: survey.md not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
+
+            HEAP_LOG="$GAME_DIR/GameFiles/${DM_GAME}_build/logs/heap_check.log"
+
+            if [[ -f "$HEAP_LOG" ]]; then
+              cp "$HEAP_LOG" "$DIAG_DIR/heap_check.log"
+              echo "Collected heap_check.log from: $HEAP_LOG" \
+                >> "$DIAG_DIR/metadata.txt"
+            else
+              HEAP_MATCH="$(
+                find "$GAME_DIR" -type f -name heap_check.log \
+                  -path "*/${DM_GAME}_build/*" \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [[ -n "$HEAP_MATCH" ]]; then
+                cp "$HEAP_MATCH" "$DIAG_DIR/heap_check.log"
+                echo "Collected heap_check.log from alternate location: $HEAP_MATCH" \
+                  >> "$DIAG_DIR/metadata.txt"
+              else
+                echo "WARNING: heap_check.log not found" \
+                  >> "$DIAG_DIR/metadata.txt"
+              fi
+            fi
+          fi
+
+          if [[ -n "${DM_GAME:-}" ]]; then
+            BUILD_ROOT="$GAME_DIR/GameFiles/${DM_GAME}_build"
+
+            if [[ -d "$BUILD_ROOT/logs" ]]; then
+              mkdir -p "$DIAG_DIR/logs"
+              find "$BUILD_ROOT/logs" -type f -size -3000k \
+                -exec cp {} "$DIAG_DIR/logs/" \; 2>/dev/null || true
+            fi
+
+            if [[ -f "${NXNATIVE_DIR:-}/dm/gfx/tools/shader_split.py" ]]; then
+              cp "$NXNATIVE_DIR/dm/gfx/tools/shader_split.py" "$DIAG_DIR/shader_split.py"
+            fi
+
+            SHDIR="$(find "$BUILD_ROOT/extract" -type d -path '*/RomFS/Content/Shaders' \
+              -print -quit 2>/dev/null || true)"
+
+            if [[ -n "$SHDIR" ]]; then
+              {
+                echo "Shader directory: $SHDIR"
+                echo ""
+                echo "Files (bytes, path):"
+                find "$SHDIR" -type f -exec ls -l {} \; | awk '{print $5, $NF}' | sed "s#$SHDIR/##"
+                echo ""
+                echo "First 64 bytes of the first 8 .nvn files:"
+                find "$SHDIR" -type f -name '*.nvn' | sort | head -8 | while read -r f; do
+                  echo "== ${f#$SHDIR/} ($(wc -c < "$f") bytes)"
+                  xxd -l 64 "$f"
+                done
+              } > "$DIAG_DIR/shader-files.txt" 2>&1
+
+              python3 - "$SHDIR" >> "$DIAG_DIR/shader-files.txt" 2>&1 <<'PY' || true
+          import collections, os, sys
+          root = sys.argv[1]
+          heads = collections.Counter()
+          found = collections.Counter()
+          total = 0
+          marks = {b"BNSH": "BNSH", b"BAHS": "BAHS", b"\x91\x68\x86\x19": "GLSLC", b"NVNS": "NVNS"}
+          for d, _, names in os.walk(root):
+              for n in names:
+                  if not n.endswith(".nvn"):
+                      continue
+                  total += 1
+                  data = open(os.path.join(d, n), "rb").read()
+                  heads[data[:8].hex()] += 1
+                  for magic, label in marks.items():
+                      if magic in data:
+                        found[label] += 1
+          print("")
+          print(f".nvn files: {total}")
+          print("first 8 bytes (hex) -> count:")
+          for k, v in heads.most_common(10):
+              print(f"  {k}: {v}")
+          print("files containing a marker anywhere:")
+          for label in marks.values():
+              print(f"  {label}: {found[label]}")
+          PY
+            fi
+          fi
+
+          {
+            echo ""
+            echo "Diagnostic artifact contents:"
+            find "$DIAG_DIR" -maxdepth 4 -type f -print
+          } >> "$DIAG_DIR/metadata.txt"
+
+          echo "Diagnostic collection complete."
+
+      - name: Upload build diagnostics and provisional profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-${{ env.DM_GAME }}-diagnostics
+          path: ${{ github.workspace }}/GameFiles/diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-${{ env.DM_GAME }}-IPA
+          path: ${{ github.workspace }}/GameFiles/*.ipa
+          if-no-files-found: error
+          retention-days: 7
