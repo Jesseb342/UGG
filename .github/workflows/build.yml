@@ -155,16 +155,16 @@ jobs:
 
           old = "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n    open(g + '.in', 'wb').write(src)\n"
           replacement = (
-              "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n"
-              "    " + marker + "\n"
-              "    def _promote_es_version(match):\n"
-              "        version = int(match.group(2))\n"
-              "        if version < 310:\n"
-              "            print(f'[UGG GLSL VERSION] {key} {stage}: ES {version} -> 310', flush=True)\n"
-              "            return match.group(1) + b'310' + match.group(3)\n"
-              "        return match.group(0)\n"
-              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)([ \\t]+es\\b)', _promote_es_version, src)\n"
-              "    open(g + '.in', 'wb').write(src)\n"
+              "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\\n"
+              "    " + marker + "\\n"
+              "    def _promote_es_bytes(match):\\n"
+              "        version = int(match.group(2))\\n"
+              "        if version < 310:\\n"
+              "            print(f'[UGG GLSL SOURCE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\\n"
+              "            return match.group(1) + b'310 es'\\n"
+              "        return match.group(0)\\n"
+              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_bytes, src)\\n"
+              "    open(g + '.in', 'wb').write(src)\\n"
           )
           if source.count(old) != 1:
               raise SystemExit(f"Expected one translate() input-write site; found {source.count(old)}")
