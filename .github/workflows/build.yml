@@ -51,27 +51,8 @@ jobs:
           set -uo pipefail
           OUT="$GITHUB_WORKSPACE/probe"
           mkdir -p "$OUT/files"
-
           grep -rIl -e "glShaderSource" -e "gl_shaders" -e "NVN shader steps" \
             --include='*.py' --include='*.sh' . | sort > "$OUT/matching-files.txt"
-
-          grep -rIn -e "glShaderSource" -e "gl_shaders.py" \
-            -e "renders with OpenGL" -e "NVN shader steps" \
-            --include='*.py' --include='*.sh' . > "$OUT/matches.txt" || true
-
-          while read -r f; do
-            [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 400000 ] && \
-              cp "$f" "$OUT/files/$(echo "${f#./}" | tr / _)"
-          done < "$OUT/matching-files.txt"
-
-          cp scripts/build_ipa_from_nsp.py "$OUT/files/scripts_build_ipa_from_nsp.py" || true
-
-          for f in dm/gfx/gl/hle_gl.m; do
-            [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 2000000 ] && \
-              cp "$f" "$OUT/files/$(echo "$f" | tr / _)"
-          done
-
-          python3 scripts/build_ipa_from_nsp.py --help > "$OUT/help.txt" 2>&1 || true
           find "$OUT" -type f -print
 
       - name: "Upload probe results"
@@ -115,7 +96,10 @@ jobs:
           encoded = os.environ.get("PROD_KEYS_BASE64", "").strip()
           if not encoded:
               raise SystemExit("PROD_KEYS_BASE64 secret is empty")
-          raw = base64.b64decode("".join(encoded.split()), validate=True)
+          try:
+              raw = base64.b64decode("".join(encoded.split()), validate=True)
+          except Exception as e:
+              raise SystemExit(f"PROD_KEYS_BASE64 is not valid Base64: {e}")
           with open(path, "wb") as f:
               f.write(raw)
           print(f"prod.keys decoded and validated ({len(raw):,} bytes).")
@@ -166,24 +150,112 @@ jobs:
           fi
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
+      - name: "Cache shader translator"
+        id: shader-cache
+        uses: actions/cache@v4
+        with:
+          path: "nxnative/dm/gfx/tools/dmsh_xlate_bin"
+          key: "nxnative-shader-translator-${{ runner.os }}-${{ runner.arch }}-dotnet10-${{ hashFiles('nxnative/dm/gfx/tools/dmsh_xlate/**/*') }}"
+
+      - name: "Rebuild shader translator"
+        if: "${{ steps.shader-cache.outputs.cache-hit != 'true' }}"
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64|aarch64) RID=osx-arm64 ;;
+            x86_64) RID=osx-x64 ;;
+            *) echo "::error::Unsupported runner architecture"; exit 1 ;;
+          esac
+          dotnet publish dm/gfx/tools/dmsh_xlate -c Release -r "$RID" --self-contained true -p:UseAppHost=true -o dm/gfx/tools/dmsh_xlate_bin
+
+      - name: "Download game archive from direct link"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GAME_DIR/downloads"
+          curl --fail --show-error --location \
+            --connect-timeout 30 --max-time 7200 \
+            --retry 3 --retry-delay 5 \
+            --output "$GAME_DIR/downloads/game-archive.rar" \
+            "$SENDCM_URL"
+
+      - name: "Extract archives and collect NSP files"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
+          for file in "$GAME_DIR"/downloads/*; do
+            [[ -f "$file" ]] || continue
+            unar -force-overwrite -output-directory "$GAME_DIR/extracted" "$file"
+          done
+          find "$GAME_DIR/extracted" -type f \( -iname '*.nsp' -o -iname '*.nsz' \) -exec cp -f {} "$GAME_DIR/nsp/" \;
+
+      - name: "Identify base game title ID"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$PROFILE_OVERRIDE" ]]; then
+            DM_GAME="${PROFILE_OVERRIDE^^}"
+            DM_GAME="${DM_GAME#0X}"
+          else
+            BASE_FILE="$(find "$GAME_DIR/nsp" -maxdepth 1 -type f -iname '*.nsp' | head -n 1 || true)"
+            DM_GAME="$(basename "$BASE_FILE" | grep -Eio '\[([0-9a-f]{16})\]' | head -n 1 | tr -d '[]' | tr '[:lower:]' '[:upper:]' || true)"
+          fi
+          echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
+
       - name: "Prepare game directory"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GAME_DIR/GameFiles"
+          find "$GAME_DIR/nsp" -maxdepth 1 -type f \( -iname '*.nsp' -o -iname '*.nsz' \) -exec cp -f {} "$GAME_DIR/GameFiles/" \;
+          echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
 
       - name: "Build IPA using automatic profile generation"
         shell: bash
         working-directory: nxnative
         run: |
           set -euo pipefail
-          echo "Starting build process..."
+          python3 scripts/build_ipa_from_nsp.py "$BUILD_GAME_DIR" -k "$GAME_DIR/keys/prod.keys" -o "$GAME_DIR/${DM_GAME}.ipa" || true
+
+      - name: "Collect build diagnostics and profile"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          DIAG_DIR="$GAME_DIR/diagnostics"
+          mkdir -p "$DIAG_DIR"
+          if [[ -n "${DM_GAME:-}" ]]; then
+            BUILD_ROOT="$GAME_DIR/GameFiles/${DM_GAME}_build"
+            SHDIR="$(find "$BUILD_ROOT/extract" -type d -path '*/RomFS/Content/Shaders' -print -quit 2>/dev/null || true)"
+            if [[ -n "$SHDIR" ]]; then
+              {
+                echo "Shader directory: $SHDIR"
+                find "$SHDIR" -type f -exec ls -l {} \; | awk '{print $5, $NF}' | sed "s#$SHDIR/##"
+                find "$SHDIR" -type f -name '*.nvn' | sort | head -8 | while read -r f; do
+                  echo "== ${f#$SHDIR/} ($(wc -c < "$f") bytes)"
+                  xxd -l 64 "$f"
+                done
+              } > "$DIAG_DIR/shader-files.txt" 2>&1
+            fi
+          fi
 
       - name: "Upload build diagnostics"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "nxnative-diagnostics"
+          name: "nxnative-${{ env.DM_GAME || 'diagnostics' }}-diagnostics"
           path: "${{ github.workspace }}/GameFiles/diagnostics/"
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "Upload IPA"
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "nxnative-${{ env.DM_GAME || 'IPA' }}-IPA"
+          path: "${{ github.workspace }}/GameFiles/*.ipa"
           if-no-files-found: ignore
           retention-days: 7
