@@ -155,37 +155,37 @@ jobs:
 
           old = "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n    open(g + '.in', 'wb').write(src)\n"
           replacement = (
-              "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\\n"
-              "    " + marker + "\\n"
-              "    def _promote_es_bytes(match):\\n"
-              "        version = int(match.group(2))\\n"
-              "        if version < 310:\\n"
-              "            print(f'[UGG GLSL SOURCE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\\n"
-              "            return match.group(1) + b'310 es'\\n"
-              "        return match.group(0)\\n"
-              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_bytes, src)\\n"
-              "    open(g + '.in', 'wb').write(src)\\n"
+              "    g = os.path.join(tmp, f'{key}.{stage}'); spv = g + '.spv'; msl = os.path.join(tmp, f'{key}_{stage[0]}.metal')\n"
+              "    " + marker + "\n"
+              "    def _promote_es_bytes(match):\n"
+              "        version = int(match.group(2))\n"
+              "        if version < 310:\n"
+              "            print(f'[UGG GLSL SOURCE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\n"
+              "            return match.group(1) + b'310 es'\n"
+              "        return match.group(0)\n"
+              "    src = re.sub(rb'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_bytes, src)\n"
+              "    open(g + '.in', 'wb').write(src)\n"
           )
           if source.count(old) != 1:
               raise SystemExit(f"Expected one translate() input-write site; found {source.count(old)}")
           source = source.replace(old, replacement, 1)
           path.write_text(source)
           check = path.read_text()
-          if marker not in check or "_promote_es_version" not in check:
+          if marker not in check or "_promote_es_bytes" not in check:
               raise SystemExit("Post-write verification failed")
           pre_marker = "# UGG: normalize preprocessed GLSL version before SPIR-V"
-          pre_old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n    open(g, 'w').write(fixups(pre))\\n"
+          pre_old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n    open(g, 'w').write(fixups(pre))\n"
           pre_new = (
-              "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n"
-              "    # UGG: normalize preprocessed GLSL version before SPIR-V\\n"
-              "    def _promote_es_pre(match):\\n"
-              "        version = int(match.group(2))\\n"
-              "        if version < 310:\\n"
-              "            print(f'[UGG GLSL PRE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\\n"
-              "            return match.group(1) + '310 es'\\n"
-              "        return match.group(0)\\n"
-              "    pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_pre, pre)\\n"
-              "    open(g, 'w').write(fixups(pre))\\n"
+              "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n"
+              "    # UGG: normalize preprocessed GLSL version before SPIR-V\n"
+              "    def _promote_es_pre(match):\n"
+              "        version = int(match.group(2))\n"
+              "        if version < 310:\n"
+              "            print(f'[UGG GLSL PRE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\n"
+              "            return match.group(1) + '310 es'\n"
+              "        return match.group(0)\n"
+              "    pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_pre, pre)\n"
+              "    open(g, 'w').write(fixups(pre))\n"
           )
           if source.count(pre_old) != 1:
               raise SystemExit(f"Expected one preprocessed shader write site; found {source.count(pre_old)}")
