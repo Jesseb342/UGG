@@ -218,7 +218,34 @@ jobs:
           chmod +x "$TRANSLATOR"
           "$TRANSLATOR" --source-sha
 
+      - name: Create private game-package cache key
+        id: game-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os
+          values = [
+              os.environ.get("SENDCM_URL", ""),
+              os.environ.get("UPDATE_URL", ""),
+          ]
+          if not values[0]:
+              raise SystemExit("SENDCM_URL is empty; cannot identify game package cache.")
+          digest = hashlib.sha256("\0".join(values).encode()).hexdigest()[:24]
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"GAME_CACHE_KEY={digest}\n")
+          print("Private game-package cache fingerprint:", digest)
+          PY
+
+      - name: Cache extracted game packages
+        id: game-package-cache
+        uses: actions/cache@v4
+        with:
+          path: GameFiles/nsp
+          key: nxnative-game-packages-v1-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
+
       - name: Download game archive from direct link
+        if: steps.game-package-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -253,6 +280,7 @@ jobs:
           fi
 
       - name: Extract archives and collect NSP files
+        if: steps.game-package-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
