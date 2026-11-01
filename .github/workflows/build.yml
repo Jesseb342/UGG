@@ -65,6 +65,16 @@ jobs:
 
           cp scripts/build_ipa_from_nsp.py "$OUT/files/scripts_build_ipa_from_nsp.py" || true
 
+          for f in dm/gfx/gl/hle_gl.m; do
+            [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 2000000 ] && \
+              cp "$f" "$OUT/files/$(echo "$f" | tr / _)"
+          done
+
+          grep -rIn -B3 -A14 -e "DM_GL_CAPTURE" -e "DM_GL_LOG" -e "env\.txt" \
+            --include='*.m' --include='*.mm' --include='*.c' --include='*.h' \
+            --include='*.swift' --include='*.sh' --include='*.py' . \
+            > "$OUT/capture-context.txt" || true
+
           python3 scripts/build_ipa_from_nsp.py --help > "$OUT/help.txt" 2>&1 || true
           grep -rhoE "DM_[A-Z_]*(GL|GFX|NVN|SHADER)[A-Z_]*" . 2>/dev/null \
             | sort -u > "$OUT/env-options.txt" || true
