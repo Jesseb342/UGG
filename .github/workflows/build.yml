@@ -173,7 +173,28 @@ jobs:
           check = path.read_text()
           if marker not in check or "_promote_es_version" not in check:
               raise SystemExit("Post-write verification failed")
-          print("Verified callback-based GLSL ES version patch:", path)
+          pre_marker = "# UGG: normalize preprocessed GLSL version before SPIR-V"
+          pre_old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n    open(g, 'w').write(fixups(pre))\\n"
+          pre_new = (
+              "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n"
+              "    # UGG: normalize preprocessed GLSL version before SPIR-V\\n"
+              "    def _promote_es_pre(match):\\n"
+              "        version = int(match.group(2))\\n"
+              "        if version < 310:\\n"
+              "            print(f'[UGG GLSL PRE VERSION] {key} {stage}: {version} -> 310 es', flush=True)\\n"
+              "            return match.group(1) + '310 es'\\n"
+              "        return match.group(0)\\n"
+              "    pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)([0-9]+)(?:[ \\t]+es)?\\b', _promote_es_pre, pre)\\n"
+              "    open(g, 'w').write(fixups(pre))\\n"
+          )
+          if source.count(pre_old) != 1:
+              raise SystemExit(f"Expected one preprocessed shader write site; found {source.count(pre_old)}")
+          source = source.replace(pre_old, pre_new, 1)
+          path.write_text(source)
+          check = path.read_text()
+          if pre_marker not in check:
+              raise SystemExit("Preprocessed GLSL version patch verification failed")
+          print("Verified preprocessed GLSL version patch:", path)
           print("Patched file SHA256:", hashlib.sha256(path.read_bytes()).hexdigest())
           PY
 
