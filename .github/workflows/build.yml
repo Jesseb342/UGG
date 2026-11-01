@@ -1,4 +1,4 @@
-Name: Build unsigned nxnative IPA
+name: Build unsigned nxnative IPA
 
 on:
   workflow_dispatch:
@@ -283,7 +283,6 @@ jobs:
               print("shader_split.py not found at expected path, skipping custom patch.")
               exit(0)
           
-          # Append or modify splitter logic to handle raw .nvn files that lack BNSH/BAHS wrappers
           content = path.read_text()
           if "UGG_RAW_NVN" in content:
               print("Splitter patch already applied.")
@@ -299,7 +298,6 @@ def parse_raw_nvn_directory(romfs_shaders_dir):
     for filepath in nvn_files:
         with open(filepath, "rb") as f:
             header = f.read(32)
-        # Process or register raw shader streams appropriately
         extracted_count += 1
     print(f"[*] UGG: Processed {extracted_count} raw .nvn files.")
 """
