@@ -498,6 +498,30 @@ jobs:
 
           echo "Shader-chain lock and header updated."
 
+      - name: Force NVN shader path for Bugsnax
+        if: env.DM_GAME == '0100454006F1E000'
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dm/games/profile_guess.py")
+          source = path.read_text()
+
+          old = "    gl = not vulkan and 'eglCreateWindowSurface' in imports and bool(gl_names)\n"
+          new = "    gl = False  # UGG: Bugsnax names glShaderSource (Irrlicht) but renders through NVN\n"
+
+          if source.count(old) != 1:
+              raise SystemExit(f"Expected one GL detection line; found {source.count(old)}. Refusing to patch.")
+          path.write_text(source.replace(old, new, 1))
+          print("Bugsnax graphics detection forced to NVN:", path)
+          PY
+
+          grep -n "UGG: Bugsnax" dm/games/profile_guess.py
+
       - name: Add Goose SDK Break register diagnostics
         if: env.DM_GAME == '010082400BCC6000'
         shell: bash
