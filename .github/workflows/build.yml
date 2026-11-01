@@ -766,6 +766,65 @@ jobs:
             fi
           fi
 
+          if [[ -n "${DM_GAME:-}" ]]; then
+            BUILD_ROOT="$GAME_DIR/GameFiles/${DM_GAME}_build"
+
+            if [[ -d "$BUILD_ROOT/logs" ]]; then
+              mkdir -p "$DIAG_DIR/logs"
+              find "$BUILD_ROOT/logs" -type f -size -3000k \
+                -exec cp {} "$DIAG_DIR/logs/" \; 2>/dev/null || true
+            fi
+
+            if [[ -f "${NXNATIVE_DIR:-}/dm/gfx/tools/shader_split.py" ]]; then
+              cp "$NXNATIVE_DIR/dm/gfx/tools/shader_split.py" "$DIAG_DIR/shader_split.py"
+            fi
+
+            SHDIR="$(find "$BUILD_ROOT/extract" -type d -path '*/RomFS/Content/Shaders' \
+              -print -quit 2>/dev/null || true)"
+
+            if [[ -n "$SHDIR" ]]; then
+              {
+                echo "Shader directory: $SHDIR"
+                echo ""
+                echo "Files (bytes, path):"
+                find "$SHDIR" -type f -exec ls -l {} \; | awk '{print $5, $NF}' | sed "s#$SHDIR/##"
+                echo ""
+                echo "First 64 bytes of the first 8 .nvn files:"
+                find "$SHDIR" -type f -name '*.nvn' | sort | head -8 | while read -r f; do
+                  echo "== ${f#$SHDIR/} ($(wc -c < "$f") bytes)"
+                  xxd -l 64 "$f"
+                done
+              } > "$DIAG_DIR/shader-files.txt" 2>&1
+
+              python3 - "$SHDIR" >> "$DIAG_DIR/shader-files.txt" 2>&1 <<'PY' || true
+          import collections, os, sys
+          root = sys.argv[1]
+          heads = collections.Counter()
+          found = collections.Counter()
+          total = 0
+          marks = {b"BNSH": "BNSH", b"BAHS": "BAHS", b"\x91\x68\x86\x19": "GLSLC", b"NVNS": "NVNS"}
+          for d, _, names in os.walk(root):
+              for n in names:
+                  if not n.endswith(".nvn"):
+                      continue
+                  total += 1
+                  data = open(os.path.join(d, n), "rb").read()
+                  heads[data[:8].hex()] += 1
+                  for magic, label in marks.items():
+                      if magic in data:
+                          found[label] += 1
+          print("")
+          print(f".nvn files: {total}")
+          print("first 8 bytes (hex) -> count:")
+          for k, v in heads.most_common(10):
+              print(f"  {k}: {v}")
+          print("files containing a marker anywhere:")
+          for label in marks.values():
+              print(f"  {label}: {found[label]}")
+          PY
+            fi
+          fi
+
           {
             echo ""
             echo "Diagnostic artifact contents:"
