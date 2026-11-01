@@ -148,13 +148,14 @@ jobs:
           path = Path("dm/gfx/tools/gl_shaders.py")
           source = path.read_text()
           old = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\n"
-          new = old + "# Promote the exact GLSL ES 3.00 directive before SPIR-V compilation.\n" + "    if '#version 300 es' in pre:\n" + "        pre = pre.replace('#version 300 es', '#version 310 es', 1)\n" + "        print(f'Promoted GLSL ES 3.00 to 3.10 for SPIR-V: {key}')\n"
-          if "Promoted GLSL ES 3.00 to 3.10 for SPIR-V" in source:
+          new = old + "    # Promote ES 3.00 with whitespace-tolerant matching; report the actual directive.\n" + "    version = re.search(r'(?m)^([ \\t]*#\\s*version[ \\t]+)(\\d+)([ \\t]+es\\b)', pre)\n" + "    if version:\n" + "        print(f'[GLSL PATCH ACTIVE] {key}: input {version.group(0)!r}', flush=True)\n" + "        if version.group(2) == '300':\n" + "            pre = re.sub(r'(?m)^([ \\t]*#\\s*version[ \\t]+)300([ \\t]+es\\b)', r'\\\\g<1>310\\\\g<2>', pre, count=1)\n" + "            print(f'[GLSL PATCH] {key}: promoted ES 300 to ES 310', flush=True)\n" + "    if re.search(r'(?m)^#\\s*version[ \\t]+300[ \\t]+es\\b', pre):\n" + "        raise RuntimeError(f'GLSL ES 300 directive remains after promotion: {key}')\n"
+          if "GLSL PATCH ACTIVE" in source:
               raise SystemExit("Shader version compatibility patch already present")
           if old not in source:
               raise SystemExit("Could not find expected gl_shaders.py preprocessing line; refusing an unsafe patch")
           path.write_text(source.replace(old, new, 1))
-          print("Patched gl_shaders.py to promote GLSL ES 3.00 to 3.10 for SPIR-V compilation.")
+          print("Patched gl_shaders.py with whitespace-tolerant GLSL ES version promotion and runtime diagnostics.")
+
           PY
 
       - name: Cache shader translator
