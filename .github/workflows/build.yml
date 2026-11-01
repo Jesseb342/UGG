@@ -152,34 +152,35 @@ jobs:
           if marker in source:
               raise SystemExit("UGG shader compatibility patch already present")
 
-          old_input = "    open(g + '.in', 'wb').write(src)\\n"
-          new_input = (
-              "    # UGG: upgrade explicit ES versions before preprocessing\\n"
-              "    src = re.sub(rb'(?m)^([ \\\\t]*#\\\\s*version[ \\\\t]+)([0-9]+)(?:[ \\\\t]+es)?\\\\b', "
-              "lambda m: m.group(1) + b'310 es' if int(m.group(2)) < 310 else m.group(0), src)\\n"
-              "    open(g + '.in', 'wb').write(src)\\n"
-          )
+          old_input = "\n".join(["    open(g + '.in', 'wb').write(src)"]) + "\n"
+          new_input = "\n".join([
+              "    # UGG: upgrade explicit ES versions before preprocessing",
+              r"    src = re.sub(rb'(?m)^([ \t]*#\s*version[ \t]+)([0-9]+)(?:[ \t]+es)?\b', lambda m: m.group(1) + b'310 es' if int(m.group(2)) < 310 else m.group(0), src)",
+              "    open(g + '.in', 'wb').write(src)",
+          ]) + "\n"
           if source.count(old_input) != 1:
               raise SystemExit(f"Expected one shader input write; found {source.count(old_input)}")
           source = source.replace(old_input, new_input, 1)
 
-          old_pre = "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first\\n    open(g, 'w').write(fixups(pre))\\n"
-          new_pre = (
-              "    # UGG: upgrade legacy GLSL ES before SPIR-V\\n"
-              "    version_at = r.stdout.find('#version')\\n"
-              "    pre = r.stdout[version_at:] if version_at >= 0 else r.stdout\\n"
-              "    # Conditional #version 440 core is stripped by -E when USE_PRECOMPILED is undefined.\\n"
-              "    if version_at < 0:\\n"
-              "        pre = '#version 310 es\\\\n' + pre\\n"
-              "        if stage == 'vert':\\n"
-              "            pre = re.sub(r'\\\\\\\\battribute\\\\\\\\b', 'in', pre)\\n"
-              "            pre = re.sub(r'\\\\\\\\bvarying\\\\\\\\b', 'out', pre)\\n"
-              "        else:\\n"
-              "            pre = re.sub(r'\\\\\\\\bvarying\\\\\\\\b', 'in', pre)\\n"
-              "    pre = re.sub(r'(?m)^([ \\\\t]*#\\\\s*version[ \\\\t]+)([0-9]+)(?:[ \\\\t]+es)?\\\\b', "
-              "lambda m: m.group(1) + '310 es' if int(m.group(2)) < 310 else m.group(0), pre)\\n"
-              "    open(g, 'w').write(fixups(pre))\\n"
-          )
+          old_pre = "\n".join([
+              "    pre = r.stdout[r.stdout.find('#version'):]   # warnings come first",
+              "    open(g, 'w').write(fixups(pre))",
+          ]) + "\n"
+          new_pre = "\n".join([
+              "    # UGG: upgrade legacy GLSL ES before SPIR-V",
+              "    version_at = r.stdout.find('#version')",
+              "    pre = r.stdout[version_at:] if version_at >= 0 else r.stdout",
+              "    # Conditional #version 440 core is stripped by -E when USE_PRECOMPILED is undefined.",
+              "    if version_at < 0:",
+              r"        pre = '#version 310 es\n' + pre",
+              "        if stage == 'vert':",
+              r"            pre = re.sub(r'\battribute\b', 'in', pre)",
+              r"            pre = re.sub(r'\bvarying\b', 'out', pre)",
+              "        else:",
+              r"            pre = re.sub(r'\bvarying\b', 'in', pre)",
+              r"    pre = re.sub(r'(?m)^([ \t]*#\s*version[ \t]+)([0-9]+)(?:[ \t]+es)?\b', lambda m: m.group(1) + '310 es' if int(m.group(2)) < 310 else m.group(0), pre)",
+              "    open(g, 'w').write(fixups(pre))",
+          ]) + "\n"
           if source.count(old_pre) != 1:
               raise SystemExit(f"Expected one preprocessed shader write; found {source.count(old_pre)}")
           source = source.replace(old_pre, new_pre, 1)
@@ -189,8 +190,8 @@ jobs:
           source = source.replace(old_err1, "return 'glslang -E: ' + ((r.stdout or '') + (r.stderr or '')).strip()[:600] or f'exit={r.returncode}'")
           source = source.replace(old_err2, "return 'glslang: ' + ((r.stdout or '') + (r.stderr or '')).strip()[:600] or f'exit={r.returncode}'")
 
-          needle = "        msls = [v[2] for v in seen.values()]\\n"
-          guard = "        msls = [v[2] for v in seen.values()]\\n        if not msls: red('no shaders translated successfully; inspect per-shader glslang diagnostics')\\n"
+          needle = "\n".join(["        msls = [v[2] for v in seen.values()]"]) + "\n"
+          guard = needle + "        if not msls: red('no shaders translated successfully; inspect per-shader glslang diagnostics')\n"
           if source.count(needle) != 1:
               raise SystemExit("Could not locate unique metallib input collection")
           source = source.replace(needle, guard, 1)
