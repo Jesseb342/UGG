@@ -244,6 +244,26 @@ jobs:
           path: GameFiles/nsp
           key: nxnative-game-packages-v1-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
 
+      - name: Create game cache key
+        id: game-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_KEY="$(python3 - <<'PY'
+          import hashlib, os
+          material = os.environ.get("SENDCM_URL", "") + "\\0" + os.environ.get("UPDATE_URL", "")
+          print(hashlib.sha256(material.encode()).hexdigest())
+          PY
+          )"
+          echo "key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Restore extracted game packages
+        id: game-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: GameFiles/nsp
+          key: nxnative-game-nsp-${{ runner.os }}-${{ steps.game-cache-key.outputs.key }}
+
       - name: Download game archive from direct link
         if: steps.game-package-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -339,6 +359,13 @@ jobs:
               if path.suffix.lower() == ".nsp" and magic != b"PFS0":
                   raise SystemExit(f"{path.name} does not have the expected NSP PFS0 signature; archive may be wrong or corrupt.")
           PY
+
+      - name: Save extracted game package cache
+        if: steps.game-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: GameFiles/nsp
+          key: nxnative-game-nsp-${{ runner.os }}-${{ steps.game-cache-key.outputs.key }}
 
       - name: Identify base game title ID
         shell: bash
