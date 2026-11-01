@@ -266,9 +266,7 @@ jobs:
         id: game-package-cache
         uses: actions/cache/restore@v4
         with:
-          path: |
-            GameFiles/downloads
-            GameFiles/nsp
+          path: GameFiles/nsp
           key: nxnative-game-packages-v2-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
 
       - name: Download game archive from direct link
@@ -371,9 +369,7 @@ jobs:
         if: steps.game-package-cache.outputs.cache-hit != 'true' && success()
         uses: actions/cache/save@v4
         with:
-          path: |
-            GameFiles/downloads
-            GameFiles/nsp
+          path: GameFiles/nsp
           key: nxnative-game-packages-v2-${{ runner.os }}-${{ env.GAME_CACHE_KEY }}
 
       - name: Identify base game title ID
