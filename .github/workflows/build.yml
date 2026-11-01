@@ -506,6 +506,60 @@ jobs:
 
           } 2>&1 | tee "$GAME_DIR/build-diagnostics.log"
 
+      - name: Validate IPA archive and app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="$GAME_DIR/${DM_GAME}.ipa"
+          test -s "$IPA"
+
+          echo "Validating ZIP/ZIP64 structure and every entry's CRC..."
+          python3 - "$IPA" <<'PY'
+          import plistlib
+          import sys
+          import zipfile
+
+          ipa = sys.argv[1]
+          expected_info = "Payload/DmIOS.app/Info.plist"
+
+          try:
+              with zipfile.ZipFile(ipa, "r", allowZip64=True) as archive:
+                  bad = archive.testzip()
+                  if bad is not None:
+                      raise SystemExit(f"IPA CRC failure in entry: {bad}")
+
+                  names = set(archive.namelist())
+                  if expected_info not in names:
+                      raise SystemExit(f"Missing required app metadata: {expected_info}")
+
+                  with archive.open(expected_info) as stream:
+                      info = plistlib.load(stream)
+
+                  executable = info.get("CFBundleExecutable")
+                  if not isinstance(executable, str) or not executable:
+                      raise SystemExit("Info.plist has no valid CFBundleExecutable")
+
+                  executable_path = f"Payload/DmIOS.app/{executable}"
+                  if executable_path not in names:
+                      raise SystemExit(f"Missing app executable: {executable_path}")
+
+                  executable_info = archive.getinfo(executable_path)
+                  if executable_info.file_size <= 0:
+                      raise SystemExit(f"App executable is empty: {executable_path}")
+
+                  if not any(name.startswith("Payload/DmIOS.app/") for name in names):
+                      raise SystemExit("Payload/DmIOS.app contains no app files")
+
+                  print(f"ZIP/ZIP64 integrity: PASS ({len(names)} entries)")
+                  print(f"Info.plist: PASS ({info.get('CFBundleIdentifier', 'bundle ID unavailable')})")
+                  print(f"Executable: PASS ({executable_path}, {executable_info.file_size} bytes)")
+          except (zipfile.BadZipFile, OSError, plistlib.InvalidFileException, KeyError) as exc:
+              raise SystemExit(f"IPA validation failed: {exc}")
+          PY
+
+          echo "IPA validation completed successfully."
+
       - name: Collect provisional profile and build diagnostics
         if: always()
         shell: bash
