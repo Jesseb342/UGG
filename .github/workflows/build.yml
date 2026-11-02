@@ -522,6 +522,63 @@ jobs:
 
           grep -n "UGG: Bugsnax" dm/games/profile_guess.py
 
+      - name: Read multi-section GLSLC outputs for Bugsnax
+        if: env.DM_GAME == '0100454006F1E000'
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import py_compile
+
+          path = Path("dm/gfx/tools/shader_split.py")
+          source = path.read_text()
+          marker = "# UGG: multi-section GLSLC"
+          if marker in source or "glslc_sections" in source:
+              raise SystemExit("multi-section GLSLC patch already present")
+
+          old_line = "        if c < 0 or d.find(CTL_MAGIC, c + 4, h + size) >= 0: continue\n"
+          anchor = "def glslc_shaders(d, label, need=True):\n"
+          if source.count(old_line) != 1:
+              raise SystemExit(f"Expected one control-section check; found {source.count(old_line)}. Refusing to patch.")
+          if source.count(anchor) != 1:
+              raise SystemExit(f"Expected one glslc_shaders definition; found {source.count(anchor)}. Refusing to patch.")
+
+          helper = '''def glslc_sections(d, h, size):
+              # UGG: multi-section GLSLC. Every GPU code section (type 0) of the GLSLC output at h, as (control, code) pairs
+              n, secs = struct.unpack_from('<I', d, h + 0x4c)[0], []
+              if not 0 < n <= 16 or h + 0x90 * (n + 1) > len(d): return secs
+              for i in range(n):
+                  s = h + 0x90 + 0x90 * i
+                  ssz, soff, typ = struct.unpack_from('<3I', d, s)
+                  if typ: continue
+                  co, ko, kn, cn = struct.unpack_from('<4I', d, s + 0x30)
+                  if soff + ssz > size or co + cn > ssz or ko + kn > ssz: continue
+                  secs.append((d[h + soff + co:h + soff + co + cn], d[h + soff + ko:h + soff + ko + kn]))
+              return secs
+
+          '''
+          new_line = '''        if c >= 0 and d.find(CTL_MAGIC, c + 4, h + size) >= 0:   # UGG: multi-section GLSLC: several control sections in one output, read each GPU code section
+                      for si, (ctl, code) in enumerate(glslc_sections(d, h, size)):
+                          st = glslc_stage(ctl, code)
+                          if not st or check(label, st, ctl, code): continue
+                          out.append((f'{label}#GLSLC@{h:#x}#sec{si}', st, ctl, code))
+                      continue
+                  if c < 0: continue
+          '''
+          source = source.replace(anchor, helper + anchor, 1).replace(old_line, new_line, 1)
+          path.write_text(source)
+          py_compile.compile(str(path), doraise=True)
+          check_text = path.read_text()
+          if "glslc_sections(d, h, size)" not in check_text or "multi-section GLSLC: several" not in check_text:
+              raise SystemExit("Post-write verification failed")
+          print("Installed multi-section GLSLC reader:", path)
+          PY
+
+          grep -n "multi-section GLSLC" dm/gfx/tools/shader_split.py
+
       - name: Add Goose SDK Break register diagnostics
         if: env.DM_GAME == '010082400BCC6000'
         shell: bash
